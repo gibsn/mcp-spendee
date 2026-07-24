@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=1.27,<2",
-    "spendee==1.0",
+    "spendee @ git+https://github.com/gibsn/spendee.git@583deacbafc85449f4dfd665fa6d4aab50998a7e",
 ]
 
 [project.scripts]
@@ -38,6 +38,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_spendee"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 addopts = "-q"

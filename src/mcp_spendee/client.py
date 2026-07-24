@@ -7,7 +7,7 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from requests import Session
-from spendee import Spendee
+from spendee import Spendee, SpendeeFirestoreError
 from spendee.exceptions import SpendeeError
 
 from mcp_spendee.config import Settings
@@ -115,6 +115,9 @@ class SpendeeGateway:
             for wallet in wallets
         ]
 
+    def list_labels(self) -> list[dict[str, str]]:
+        return self._call("list_labels")
+
     def list_categories(
         self,
         *,
@@ -186,6 +189,7 @@ class SpendeeGateway:
         amount: float,
         transaction_type: TransactionType,
         note: str | None = None,
+        labels: list[str] | None = None,
         occurred_at: str | None = None,
         confirm: bool = False,
         request_id: str | None = None,
@@ -195,12 +199,23 @@ class SpendeeGateway:
 
         signed_amount = -amount if transaction_type == "expense" else amount
         start_date = self._parse_datetime(occurred_at)
+        normalized_labels: list[str] = []
+        seen_labels: set[str] = set()
+        for raw_label in labels or []:
+            label = raw_label.strip()
+            if not label:
+                raise ValueError("labels must not contain empty names")
+            folded = label.casefold()
+            if folded not in seen_labels:
+                normalized_labels.append(label)
+                seen_labels.add(folded)
         preview = {
             "wallet_id": wallet_id,
             "category_id": category_id,
             "amount": signed_amount,
             "transaction_type": transaction_type,
             "note": note,
+            "labels": normalized_labels,
             "occurred_at": start_date.isoformat(timespec="seconds"),
         }
 
@@ -218,19 +233,45 @@ class SpendeeGateway:
 
         with self._lock:
             if normalized_request_id in self._write_results:
+                stored = self._write_results[normalized_request_id]
+                if normalized_labels and not stored.get("labels_applied", False):
+                    self._retry_labels(
+                        result=stored,
+                        wallet_id=wallet_id,
+                        labels=normalized_labels,
+                    )
                 return {
-                    **self._write_results[normalized_request_id],
+                    **stored,
                     "deduplicated": True,
                 }
 
-            response = self._call(
-                "create_transaction",
-                wallet_id=wallet_id,
-                category_id=category_id,
-                amount=signed_amount,
-                note=note,
-                start_date=start_date,
-            )
+            try:
+                response = self._get_api().create_transaction(
+                    wallet_id=wallet_id,
+                    category_id=category_id,
+                    amount=signed_amount,
+                    note=note,
+                    start_date=start_date,
+                    labels=normalized_labels or None,
+                )
+            except SpendeeFirestoreError as exc:
+                if not normalized_labels or not isinstance(exc.response, dict):
+                    raise SpendeeClientError(f"Spendee API request failed: {exc}") from exc
+                response = exc.response
+                result = {
+                    "status": "created_labels_failed",
+                    "created": True,
+                    "deduplicated": False,
+                    "request_id": normalized_request_id,
+                    "transaction": preview,
+                    "spendee_response": response,
+                    "labels_applied": False,
+                    "label_error": str(exc),
+                }
+                self._write_results[normalized_request_id] = result
+                return result
+            except SpendeeError as exc:
+                raise SpendeeClientError(f"Spendee API request failed: {exc}") from exc
             result = {
                 "status": "created",
                 "created": True,
@@ -238,9 +279,73 @@ class SpendeeGateway:
                 "request_id": normalized_request_id,
                 "transaction": preview,
                 "spendee_response": response,
+                "labels_applied": True,
             }
+            if normalized_labels and isinstance(response, dict):
+                result["label_result"] = response.get("firestore_labels")
             self._write_results[normalized_request_id] = result
             return result
+
+    def _retry_labels(
+        self,
+        *,
+        result: dict[str, Any],
+        wallet_id: int,
+        labels: list[str],
+    ) -> None:
+        transaction_uuid = self._find_transaction_uuid(result.get("spendee_response"))
+        if transaction_uuid is None:
+            result.update(
+                {
+                    "status": "created_labels_failed",
+                    "labels_applied": False,
+                    "label_error": (
+                        "Transaction was created, but the legacy API response "
+                        "did not contain its UUID"
+                    ),
+                }
+            )
+            return
+
+        try:
+            label_result = self._call(
+                "set_legacy_transaction_labels",
+                wallet_id,
+                transaction_uuid,
+                labels,
+            )
+        except (SpendeeClientError, ValueError) as exc:
+            result.update(
+                {
+                    "status": "created_labels_failed",
+                    "labels_applied": False,
+                    "label_error": f"Transaction was created, but labels failed: {exc}",
+                }
+            )
+            return
+
+        result.update(
+            {
+                "status": "created",
+                "labels_applied": True,
+                "label_result": label_result,
+            }
+        )
+        result.pop("label_error", None)
+
+    @staticmethod
+    def _find_transaction_uuid(value: Any) -> str | None:
+        if not isinstance(value, dict):
+            return None
+        for key in ("uuid", "transaction_uuid"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        for key in ("transaction", "result", "data"):
+            candidate = SpendeeGateway._find_transaction_uuid(value.get(key))
+            if candidate:
+                return candidate
+        return None
 
     def _parse_datetime(self, value: str | None) -> dt.datetime:
         timezone = ZoneInfo(self._settings.timezone)

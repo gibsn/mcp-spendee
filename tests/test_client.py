@@ -55,7 +55,32 @@ class FakeSpendee:
 
     def create_transaction(self, **kwargs: Any) -> dict[str, Any]:
         self.created.append(kwargs)
-        return {"id": 99}
+        return {
+            "id": 99,
+            "uuid": "transaction-uuid",
+            "firestore_labels": {
+                "changed": True,
+                "labels": kwargs.get("labels") or [],
+                "added": kwargs.get("labels") or [],
+                "removed": [],
+            },
+        }
+
+    def list_labels(self) -> list[dict[str, str]]:
+        return [{"id": "taxi-id", "name": "такси"}]
+
+    def set_legacy_transaction_labels(
+        self,
+        legacy_wallet_id: int,
+        transaction_uuid: str,
+        labels: list[str],
+    ) -> dict[str, Any]:
+        return {
+            "changed": True,
+            "labels": labels,
+            "added": labels,
+            "removed": [],
+        }
 
 
 @pytest.fixture
@@ -105,6 +130,10 @@ def test_list_wallets_returns_safe_subset(gateway: SpendeeGateway) -> None:
     ]
 
 
+def test_list_labels_uses_forked_spendee_client(gateway: SpendeeGateway) -> None:
+    assert gateway.list_labels() == [{"id": "taxi-id", "name": "такси"}]
+
+
 def test_list_categories_filters_by_wallet_and_type(gateway: SpendeeGateway) -> None:
     categories = gateway.list_categories(wallet_id=10, category_type="expense")
 
@@ -128,6 +157,7 @@ def test_create_transaction_requires_preview_then_confirmation(
         "amount": 12.5,
         "transaction_type": "expense",
         "note": "Lunch",
+        "labels": ["такси"],
         "occurred_at": "2026-07-23T12:00:00+03:00",
     }
 
@@ -138,7 +168,9 @@ def test_create_transaction_requires_preview_then_confirmation(
 
     created = gateway.create_transaction(**arguments, confirm=True, request_id="lunch-20260723")
     assert created["status"] == "created"
+    assert created["labels_applied"] is True
     assert fake_api.created[0]["amount"] == -12.5
+    assert fake_api.created[0]["labels"] == ["такси"]
 
     duplicate = gateway.create_transaction(**arguments, confirm=True, request_id="lunch-20260723")
     assert duplicate["deduplicated"] is True
