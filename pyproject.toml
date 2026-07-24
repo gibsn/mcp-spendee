@@ -23,8 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=1.27,<2",
-    "spendee==1.0",
-    "spendee-firestore-client @ git+https://github.com/gibsn/spendee-python-client.git@b112a5af2ad0ec3daf0af1056cccf8aa81a1b0da",
+    "spendee @ git+https://github.com/gibsn/spendee.git@583deacbafc85449f4dfd665fa6d4aab50998a7e",
 ]
 
 [project.scripts]

@@ -7,13 +7,8 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from requests import Session
-from spendee import Spendee
+from spendee import Spendee, SpendeeFirestoreError
 from spendee.exceptions import SpendeeError
-from spendee_firestore import (
-    AuthenticationError,
-    FirestoreError,
-    SpendeeFirestoreClient,
-)
 
 from mcp_spendee.config import Settings
 
@@ -70,13 +65,10 @@ class SpendeeGateway:
         self,
         settings: Settings,
         api_factory: Callable[[], Any] | None = None,
-        labels_api_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._settings = settings
         self._api_factory = api_factory
-        self._labels_api_factory = labels_api_factory
         self._api: Any | None = None
-        self._labels_api: Any | None = None
         self._lock = threading.RLock()
         self._write_results: dict[str, dict[str, Any]] = {}
 
@@ -95,20 +87,6 @@ class SpendeeGateway:
                     global_currency=self._settings.global_currency,
                 )
         return self._api
-
-    def _get_labels_api(self) -> Any:
-        if self._labels_api is None:
-            self._settings.validate()
-            if self._labels_api_factory is not None:
-                self._labels_api = self._labels_api_factory()
-            else:
-                assert self._settings.email is not None
-                assert self._settings.password is not None
-                self._labels_api = SpendeeFirestoreClient(
-                    self._settings.email,
-                    self._settings.password,
-                )
-        return self._labels_api
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         with self._lock:
@@ -138,12 +116,7 @@ class SpendeeGateway:
         ]
 
     def list_labels(self) -> list[dict[str, str]]:
-        with self._lock:
-            try:
-                labels = self._get_labels_api().list_labels()
-            except (AuthenticationError, FirestoreError) as exc:
-                raise SpendeeClientError(f"Spendee labels request failed: {exc}") from exc
-        return [{"id": label.id, "name": label.name} for label in labels]
+        return self._call("list_labels")
 
     def list_categories(
         self,
@@ -262,7 +235,7 @@ class SpendeeGateway:
             if normalized_request_id in self._write_results:
                 stored = self._write_results[normalized_request_id]
                 if normalized_labels and not stored.get("labels_applied", False):
-                    self._apply_labels(
+                    self._retry_labels(
                         result=stored,
                         wallet_id=wallet_id,
                         labels=normalized_labels,
@@ -272,14 +245,33 @@ class SpendeeGateway:
                     "deduplicated": True,
                 }
 
-            response = self._call(
-                "create_transaction",
-                wallet_id=wallet_id,
-                category_id=category_id,
-                amount=signed_amount,
-                note=note,
-                start_date=start_date,
-            )
+            try:
+                response = self._get_api().create_transaction(
+                    wallet_id=wallet_id,
+                    category_id=category_id,
+                    amount=signed_amount,
+                    note=note,
+                    start_date=start_date,
+                    labels=normalized_labels or None,
+                )
+            except SpendeeFirestoreError as exc:
+                if not normalized_labels or not isinstance(exc.response, dict):
+                    raise SpendeeClientError(f"Spendee API request failed: {exc}") from exc
+                response = exc.response
+                result = {
+                    "status": "created_labels_failed",
+                    "created": True,
+                    "deduplicated": False,
+                    "request_id": normalized_request_id,
+                    "transaction": preview,
+                    "spendee_response": response,
+                    "labels_applied": False,
+                    "label_error": str(exc),
+                }
+                self._write_results[normalized_request_id] = result
+                return result
+            except SpendeeError as exc:
+                raise SpendeeClientError(f"Spendee API request failed: {exc}") from exc
             result = {
                 "status": "created",
                 "created": True,
@@ -287,18 +279,14 @@ class SpendeeGateway:
                 "request_id": normalized_request_id,
                 "transaction": preview,
                 "spendee_response": response,
-                "labels_applied": not normalized_labels,
+                "labels_applied": True,
             }
+            if normalized_labels and isinstance(response, dict):
+                result["label_result"] = response.get("firestore_labels")
             self._write_results[normalized_request_id] = result
-            if normalized_labels:
-                self._apply_labels(
-                    result=result,
-                    wallet_id=wallet_id,
-                    labels=normalized_labels,
-                )
             return result
 
-    def _apply_labels(
+    def _retry_labels(
         self,
         *,
         result: dict[str, Any],
@@ -320,12 +308,13 @@ class SpendeeGateway:
             return
 
         try:
-            label_result = self._get_labels_api().set_legacy_transaction_labels(
-                legacy_wallet_id=wallet_id,
-                transaction_uuid=transaction_uuid,
-                labels=labels,
+            label_result = self._call(
+                "set_legacy_transaction_labels",
+                wallet_id,
+                transaction_uuid,
+                labels,
             )
-        except (AuthenticationError, FirestoreError, ValueError) as exc:
+        except (SpendeeClientError, ValueError) as exc:
             result.update(
                 {
                     "status": "created_labels_failed",

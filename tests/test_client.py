@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from spendee_firestore import Label
 
 from mcp_spendee.client import SpendeeGateway
 from mcp_spendee.config import ConfigurationError, Settings
@@ -56,22 +55,30 @@ class FakeSpendee:
 
     def create_transaction(self, **kwargs: Any) -> dict[str, Any]:
         self.created.append(kwargs)
-        return {"id": 99, "uuid": "transaction-uuid"}
+        return {
+            "id": 99,
+            "uuid": "transaction-uuid",
+            "firestore_labels": {
+                "changed": True,
+                "labels": kwargs.get("labels") or [],
+                "added": kwargs.get("labels") or [],
+                "removed": [],
+            },
+        }
 
+    def list_labels(self) -> list[dict[str, str]]:
+        return [{"id": "taxi-id", "name": "такси"}]
 
-class FakeLabels:
-    def __init__(self) -> None:
-        self.updates: list[dict[str, Any]] = []
-
-    def list_labels(self) -> list[Label]:
-        return [Label(id="taxi-id", name="такси")]
-
-    def set_legacy_transaction_labels(self, **kwargs: Any) -> dict[str, Any]:
-        self.updates.append(kwargs)
+    def set_legacy_transaction_labels(
+        self,
+        legacy_wallet_id: int,
+        transaction_uuid: str,
+        labels: list[str],
+    ) -> dict[str, Any]:
         return {
             "changed": True,
-            "labels": kwargs["labels"],
-            "added": kwargs["labels"],
+            "labels": labels,
+            "added": labels,
             "removed": [],
         }
 
@@ -82,23 +89,14 @@ def fake_api() -> FakeSpendee:
 
 
 @pytest.fixture
-def fake_labels() -> FakeLabels:
-    return FakeLabels()
-
-
-@pytest.fixture
-def gateway(fake_api: FakeSpendee, fake_labels: FakeLabels) -> SpendeeGateway:
+def gateway(fake_api: FakeSpendee) -> SpendeeGateway:
     settings = Settings(
         email="test@example.com",
         password="secret",
         timezone="Europe/Moscow",
         global_currency="EUR",
     )
-    return SpendeeGateway(
-        settings,
-        api_factory=lambda: fake_api,
-        labels_api_factory=lambda: fake_labels,
-    )
+    return SpendeeGateway(settings, api_factory=lambda: fake_api)
 
 
 def test_settings_status_does_not_expose_credentials() -> None:
@@ -132,7 +130,7 @@ def test_list_wallets_returns_safe_subset(gateway: SpendeeGateway) -> None:
     ]
 
 
-def test_list_labels_uses_modern_firestore_client(gateway: SpendeeGateway) -> None:
+def test_list_labels_uses_forked_spendee_client(gateway: SpendeeGateway) -> None:
     assert gateway.list_labels() == [{"id": "taxi-id", "name": "такси"}]
 
 
@@ -172,6 +170,7 @@ def test_create_transaction_requires_preview_then_confirmation(
     assert created["status"] == "created"
     assert created["labels_applied"] is True
     assert fake_api.created[0]["amount"] == -12.5
+    assert fake_api.created[0]["labels"] == ["такси"]
 
     duplicate = gateway.create_transaction(**arguments, confirm=True, request_id="lunch-20260723")
     assert duplicate["deduplicated"] is True
