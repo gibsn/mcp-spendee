@@ -16,6 +16,10 @@ class TaskInput:
     voice_file_id: str = ""
     voice_duration_seconds: int = 0
     voice_mime_type: str = ""
+    image_file_id: str = ""
+    image_mime_type: str = ""
+    image_file_name: str = ""
+    image_file_size: int = 0
     current_date: str = ""
     current_time_moscow: str = ""
 

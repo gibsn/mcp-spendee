@@ -56,6 +56,7 @@ class TelegramClient:
             sender = message.get("from", {})
             chat = message.get("chat", {})
             voice = message.get("voice") or {}
+            image = self._image_from_message(message)
             text = str(message.get("text") or message.get("caption") or "").strip()
             timestamp = datetime.fromtimestamp(int(message.get("date", 0)), tz=UTC).isoformat()
             inputs.append(
@@ -72,9 +73,35 @@ class TelegramClient:
                     voice_file_id=str(voice.get("file_id", "")),
                     voice_duration_seconds=int(voice.get("duration", 0)),
                     voice_mime_type=str(voice.get("mime_type", "")),
+                    image_file_id=str(image.get("file_id", "")),
+                    image_mime_type=str(image.get("mime_type", "")),
+                    image_file_name=str(image.get("file_name", "")),
+                    image_file_size=int(image.get("file_size", 0)),
                 )
             )
         return inputs, next_offset
+
+    @staticmethod
+    def _image_from_message(message: dict[str, Any]) -> dict[str, Any]:
+        photos = message.get("photo") or []
+        if photos:
+            largest = max(
+                photos,
+                key=lambda photo: (
+                    int(photo.get("file_size", 0)),
+                    int(photo.get("width", 0)) * int(photo.get("height", 0)),
+                ),
+            )
+            return {
+                **largest,
+                "mime_type": "image/jpeg",
+                "file_name": "telegram-photo.jpg",
+            }
+        document = message.get("document") or {}
+        mime_type = str(document.get("mime_type", "")).lower()
+        if mime_type in {"image/jpeg", "image/png"}:
+            return document
+        return {}
 
     def send_text(self, input_value: TaskInput, text: str) -> None:
         payload: dict[str, Any] = {
@@ -93,7 +120,7 @@ class TelegramClient:
             raise TelegramError("Telegram returned an invalid file path")
         file_size = int(file.get("file_size", 0))
         if file_size > maximum_bytes:
-            raise TelegramError(f"Telegram voice file is too large: {file_size} bytes")
+            raise TelegramError(f"Telegram file is too large: {file_size} bytes")
         url = f"{self.api_url}/file/bot{self.token}/{path}"
         try:
             with urllib.request.urlopen(url, timeout=40) as response:
@@ -101,7 +128,7 @@ class TelegramClient:
         except (OSError, urllib.error.URLError) as error:
             raise TelegramError("Telegram file download failed") from error
         if len(content) > maximum_bytes:
-            raise TelegramError(f"Telegram voice file exceeds {maximum_bytes} bytes")
+            raise TelegramError(f"Telegram file exceeds {maximum_bytes} bytes")
         descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(content)

@@ -59,6 +59,7 @@ class Config:
     max_input_chars: int = 4000
     max_voice_seconds: int = 120
     max_voice_bytes: int = 20 << 20
+    max_image_bytes: int = 20 << 20
     log_input: bool = True
     codex_binary: str = "codex"
     ffmpeg_binary: str = "ffmpeg"
@@ -101,6 +102,7 @@ class Config:
             max_attempts=_env_int("TELEGRAM_BOT_MAX_ATTEMPTS", 3, 1, 10),
             max_input_chars=_env_int("TELEGRAM_BOT_MAX_INPUT_CHARS", 4000, 100, 50_000),
             max_voice_seconds=_env_int("TELEGRAM_BOT_MAX_VOICE_SECONDS", 120, 5, 900),
+            max_image_bytes=_env_int("TELEGRAM_BOT_MAX_IMAGE_BYTES", 20 << 20, 1024, 50 << 20),
             log_input=_env_bool("TELEGRAM_BOT_LOG_INPUT", True),
             codex_binary=os.environ.get("CODEX_BIN", "codex"),
             ffmpeg_binary=os.environ.get("TELEGRAM_BOT_FFMPEG_BIN", "ffmpeg"),

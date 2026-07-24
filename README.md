@@ -89,11 +89,19 @@ make test
 ## Personal Telegram bot
 
 The repository also contains a polling Telegram bot modelled after
-`telegram-yazio-bot`. It accepts transaction requests as text or Russian voice
-messages, runs the installed `spendee-add-transaction` Codex skill, and replies
-with the result. Voice messages are converted with `ffmpeg` and recognized
-locally by `whisper.cpp`; audio stays in a private temporary directory and is
-deleted immediately after transcription.
+`telegram-yazio-bot`. It accepts transaction requests as text, Russian voice
+messages, or PNG/JPEG screenshots from a banking app, runs the installed
+`spendee-add-transaction` Codex skill, and replies with the result. Voice
+messages are converted with `ffmpeg` and recognized locally by `whisper.cpp`;
+audio stays in a private temporary directory and is deleted immediately after
+transcription.
+
+For a screenshot, the bot selects the largest Telegram photo variant or accepts
+an image sent as a PNG/JPEG document. The file is stored with private
+permissions, attached to the ephemeral Codex invocation, and deleted immediately
+after processing. Unlike voice transcription, screenshot recognition is not
+local: the image is sent to OpenAI as Codex image input. Avoid sending unrelated
+account details; crop the screenshot to the transaction when practical.
 
 The bot keeps a durable queue and stores the Codex result before sending the
 Telegram reply. This prevents delivery retries from creating a transaction

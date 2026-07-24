@@ -11,6 +11,7 @@ from mcp_spendee.telegram_bot.config import Config, _split_ids
 from mcp_spendee.telegram_bot.models import CodexResult, QueuedEvent, TaskInput
 from mcp_spendee.telegram_bot.processor import Processor, telegram_command
 from mcp_spendee.telegram_bot.state import StateStore
+from mcp_spendee.telegram_bot.telegram import TelegramClient
 
 
 def make_config(tmp_path: Path, allowed: frozenset[int] = frozenset({42})) -> Config:
@@ -30,9 +31,14 @@ def make_config(tmp_path: Path, allowed: frozenset[int] = frozenset({42})) -> Co
 class FakeMessenger:
     def __init__(self) -> None:
         self.messages: list[str] = []
+        self.downloaded_file_id = ""
 
     def send_text(self, _input_value: TaskInput, text: str) -> None:
         self.messages.append(text)
+
+    def download_file(self, file_id: str, destination: Path, _maximum_bytes: int) -> None:
+        self.downloaded_file_id = file_id
+        destination.write_bytes(b"fake image")
 
 
 def test_state_store_persists_and_recovers_processing(tmp_path: Path) -> None:
@@ -64,7 +70,9 @@ def test_processor_runs_codex_and_saves_result(tmp_path: Path) -> None:
     messenger = FakeMessenger()
     calls: list[TaskInput] = []
 
-    def runner(_config: Config, input_value: TaskInput) -> CodexResult:
+    def runner(
+        _config: Config, input_value: TaskInput, _image_paths: tuple[Path, ...]
+    ) -> CodexResult:
         calls.append(input_value)
         return CodexResult(
             status="logged",
@@ -98,6 +106,50 @@ def test_processor_runs_codex_and_saves_result(tmp_path: Path) -> None:
     ]
     persisted = json.loads((tmp_path / "state.json").read_text())
     assert persisted["events"][0]["result"]["status"] == "logged"
+
+
+def test_processor_downloads_image_for_codex_and_removes_it(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.json")
+    messenger = FakeMessenger()
+    attached_path: Path | None = None
+
+    def runner(
+        _config: Config, _input_value: TaskInput, image_paths: tuple[Path, ...]
+    ) -> CodexResult:
+        nonlocal attached_path
+        assert len(image_paths) == 1
+        attached_path = image_paths[0]
+        assert attached_path.suffix == ".png"
+        assert attached_path.read_bytes() == b"fake image"
+        assert attached_path.parent.stat().st_mode & 0o777 == 0o700
+        return CodexResult(status="needs_input", message="Общий или Операционка?")
+
+    processor = Processor(
+        make_config(tmp_path),
+        store,
+        messenger,
+        codex_runner=runner,
+    )
+    input_value = TaskInput(
+        message_id="image-one",
+        chat_id=42,
+        user_id=42,
+        chat_type="private",
+        image_file_id="telegram-image-id",
+        image_mime_type="image/png",
+        image_file_name="receipt.png",
+        image_file_size=1024,
+    )
+    store.add([input_value], 1)
+    event = store.claim()
+    assert event is not None
+
+    assert processor.process(event) == "done"
+    assert messenger.downloaded_file_id == "telegram-image-id"
+    assert attached_path is not None
+    assert not attached_path.exists()
+    assert "Принял скриншот" in messenger.messages[0]
+    assert messenger.messages[-1] == "Общий или Операционка?"
 
 
 def test_processor_rejects_non_allowlisted_user(tmp_path: Path) -> None:
@@ -152,3 +204,34 @@ def test_split_ids_and_commands() -> None:
         _split_ids("nope")
     assert telegram_command("/STATUS@my_bot extra") == "/status"
     assert telegram_command("запиши такси") == ""
+
+
+def test_telegram_selects_largest_photo() -> None:
+    image = TelegramClient._image_from_message(
+        {
+            "photo": [
+                {"file_id": "small", "width": 90, "height": 160, "file_size": 1000},
+                {"file_id": "large", "width": 1080, "height": 1920, "file_size": 9000},
+            ]
+        }
+    )
+    assert image["file_id"] == "large"
+    assert image["mime_type"] == "image/jpeg"
+
+
+def test_telegram_accepts_png_document_and_rejects_pdf() -> None:
+    png = TelegramClient._image_from_message(
+        {
+            "document": {
+                "file_id": "png",
+                "file_name": "bank.png",
+                "mime_type": "image/png",
+                "file_size": 123,
+            }
+        }
+    )
+    pdf = TelegramClient._image_from_message(
+        {"document": {"file_id": "pdf", "mime_type": "application/pdf"}}
+    )
+    assert png["file_id"] == "png"
+    assert pdf == {}
