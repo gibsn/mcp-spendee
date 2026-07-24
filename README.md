@@ -14,14 +14,20 @@ categories, and transactions, and create income or expense transactions.
 
 - `spendee_status` — check local configuration without logging in or exposing secrets.
 - `list_wallets` — list wallet IDs, names, balances, and currencies.
+- `list_labels` — list modern Spendee labels stored in Firestore.
 - `list_categories` — list and optionally filter categories.
 - `list_transactions` — list and optionally filter transactions.
-- `create_transaction` — preview or create an expense/income transaction.
+- `create_transaction` — preview or create an expense/income transaction,
+  optionally with existing modern labels.
 
 Creating a transaction is deliberately two-step. Call `create_transaction` once
 with `confirm=false` to inspect the normalized payload, then repeat it with
 `confirm=true` and a unique `request_id`. Reusing a request ID in the same
 server process returns the cached result instead of creating a duplicate.
+When labels are requested, the server first creates the transaction through the
+legacy API and then atomically sets its Firestore labels through the forked
+`spendee-firestore-client` library. A retry with the same `request_id` retries
+only failed label attachment and never creates the transaction twice.
 
 ## Installation
 

@@ -30,6 +30,7 @@ async def test_server_exposes_expected_tools(client_session: ClientSession) -> N
     assert {tool.name for tool in result.tools} == {
         "spendee_status",
         "list_wallets",
+        "list_labels",
         "list_categories",
         "list_transactions",
         "create_transaction",

@@ -32,6 +32,12 @@ def list_wallets() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def list_labels() -> list[dict[str, str]]:
+    """List modern Spendee labels from Firestore."""
+    return _gateway.list_labels()
+
+
+@mcp.tool()
 def list_categories(
     wallet_id: int | None = None,
     category_type: TransactionType | None = None,
@@ -57,6 +63,7 @@ def create_transaction(
     amount: float,
     transaction_type: TransactionType,
     note: str | None = None,
+    labels: list[str] | None = None,
     occurred_at: str | None = None,
     confirm: bool = False,
     request_id: str | None = None,
@@ -74,6 +81,7 @@ def create_transaction(
         amount=amount,
         transaction_type=transaction_type,
         note=note,
+        labels=labels,
         occurred_at=occurred_at,
         confirm=confirm,
         request_id=request_id,

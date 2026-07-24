@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from spendee_firestore import Label
 
 from mcp_spendee.client import SpendeeGateway
 from mcp_spendee.config import ConfigurationError, Settings
@@ -55,7 +56,24 @@ class FakeSpendee:
 
     def create_transaction(self, **kwargs: Any) -> dict[str, Any]:
         self.created.append(kwargs)
-        return {"id": 99}
+        return {"id": 99, "uuid": "transaction-uuid"}
+
+
+class FakeLabels:
+    def __init__(self) -> None:
+        self.updates: list[dict[str, Any]] = []
+
+    def list_labels(self) -> list[Label]:
+        return [Label(id="taxi-id", name="такси")]
+
+    def set_legacy_transaction_labels(self, **kwargs: Any) -> dict[str, Any]:
+        self.updates.append(kwargs)
+        return {
+            "changed": True,
+            "labels": kwargs["labels"],
+            "added": kwargs["labels"],
+            "removed": [],
+        }
 
 
 @pytest.fixture
@@ -64,14 +82,23 @@ def fake_api() -> FakeSpendee:
 
 
 @pytest.fixture
-def gateway(fake_api: FakeSpendee) -> SpendeeGateway:
+def fake_labels() -> FakeLabels:
+    return FakeLabels()
+
+
+@pytest.fixture
+def gateway(fake_api: FakeSpendee, fake_labels: FakeLabels) -> SpendeeGateway:
     settings = Settings(
         email="test@example.com",
         password="secret",
         timezone="Europe/Moscow",
         global_currency="EUR",
     )
-    return SpendeeGateway(settings, api_factory=lambda: fake_api)
+    return SpendeeGateway(
+        settings,
+        api_factory=lambda: fake_api,
+        labels_api_factory=lambda: fake_labels,
+    )
 
 
 def test_settings_status_does_not_expose_credentials() -> None:
@@ -105,6 +132,10 @@ def test_list_wallets_returns_safe_subset(gateway: SpendeeGateway) -> None:
     ]
 
 
+def test_list_labels_uses_modern_firestore_client(gateway: SpendeeGateway) -> None:
+    assert gateway.list_labels() == [{"id": "taxi-id", "name": "такси"}]
+
+
 def test_list_categories_filters_by_wallet_and_type(gateway: SpendeeGateway) -> None:
     categories = gateway.list_categories(wallet_id=10, category_type="expense")
 
@@ -128,6 +159,7 @@ def test_create_transaction_requires_preview_then_confirmation(
         "amount": 12.5,
         "transaction_type": "expense",
         "note": "Lunch",
+        "labels": ["такси"],
         "occurred_at": "2026-07-23T12:00:00+03:00",
     }
 
@@ -138,6 +170,7 @@ def test_create_transaction_requires_preview_then_confirmation(
 
     created = gateway.create_transaction(**arguments, confirm=True, request_id="lunch-20260723")
     assert created["status"] == "created"
+    assert created["labels_applied"] is True
     assert fake_api.created[0]["amount"] == -12.5
 
     duplicate = gateway.create_transaction(**arguments, confirm=True, request_id="lunch-20260723")

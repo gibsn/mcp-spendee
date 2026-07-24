@@ -420,6 +420,7 @@ source = { editable = "." }
 dependencies = [
     { name = "mcp" },
     { name = "spendee" },
+    { name = "spendee-firestore-client" },
 ]
 
 [package.dev-dependencies]
@@ -433,6 +434,7 @@ dev = [
 requires-dist = [
     { name = "mcp", specifier = ">=1.27,<2" },
     { name = "spendee", specifier = "==1.0" },
+    { name = "spendee-firestore-client", git = "https://github.com/gibsn/spendee-python-client.git?rev=b112a5af2ad0ec3daf0af1056cccf8aa81a1b0da" },
 ]
 
 [package.metadata.requires-dev]
@@ -879,6 +881,14 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/36/b1/b29289e99c38a15c15cdcc2ae5722a830bb51cd96ba24072c0c7a5ae9cff/spendee-1.0.tar.gz", hash = "sha256:f8bdfee230a00574756bf9505a31e54013a2e9dab82880684de8f88e49ff10d3", size = 11389, upload-time = "2021-01-22T10:21:43.647Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bd/89/410187739220c995057e1c24c517ba679d7b54bbfe629495860e13a4cf12/spendee-1.0-py3-none-any.whl", hash = "sha256:0dedf63006114e95a34e8ad4531f93940898eda44a700c3bf4f540c6db2635ca", size = 12581, upload-time = "2021-01-22T10:21:41.804Z" },
+]
+
+[[package]]
+name = "spendee-firestore-client"
+version = "0.1.0"
+source = { git = "https://github.com/gibsn/spendee-python-client.git?rev=b112a5af2ad0ec3daf0af1056cccf8aa81a1b0da#b112a5af2ad0ec3daf0af1056cccf8aa81a1b0da" }
+dependencies = [
+    { name = "requests" },
 ]
 
 [[package]]

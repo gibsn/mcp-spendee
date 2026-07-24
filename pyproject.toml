@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
     "mcp>=1.27,<2",
     "spendee==1.0",
+    "spendee-firestore-client @ git+https://github.com/gibsn/spendee-python-client.git@b112a5af2ad0ec3daf0af1056cccf8aa81a1b0da",
 ]
 
 [project.scripts]
@@ -38,6 +39,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_spendee"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 addopts = "-q"
