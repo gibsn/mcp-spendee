@@ -237,7 +237,6 @@ class SpendeeGateway:
                 if normalized_labels and not stored.get("labels_applied", False):
                     self._retry_labels(
                         result=stored,
-                        wallet_id=wallet_id,
                         labels=normalized_labels,
                     )
                 return {
@@ -246,12 +245,19 @@ class SpendeeGateway:
                 }
 
             try:
-                response = self._get_api().create_transaction(
-                    wallet_id=wallet_id,
-                    category_id=category_id,
+                timezone = ZoneInfo(self._settings.timezone)
+                aware_start_date = start_date.replace(tzinfo=timezone)
+                offset = aware_start_date.utcoffset()
+                response = self._get_api().create_firestore_transaction(
+                    legacy_wallet_id=wallet_id,
+                    legacy_category_id=category_id,
                     amount=signed_amount,
                     note=note,
-                    start_date=start_date,
+                    made_at=aware_start_date,
+                    timezone_name=self._settings.timezone,
+                    timezone_offset_seconds=(
+                        int(offset.total_seconds()) if offset is not None else 0
+                    ),
                     labels=normalized_labels or None,
                 )
             except SpendeeFirestoreError as exc:
@@ -290,18 +296,33 @@ class SpendeeGateway:
         self,
         *,
         result: dict[str, Any],
-        wallet_id: int,
         labels: list[str],
     ) -> None:
-        transaction_uuid = self._find_transaction_uuid(result.get("spendee_response"))
+        response = result.get("spendee_response")
+        transaction_uuid = self._find_transaction_uuid(response)
+        firestore_wallet_id = (
+            response.get("firestore_wallet_id") if isinstance(response, dict) else None
+        )
         if transaction_uuid is None:
             result.update(
                 {
                     "status": "created_labels_failed",
                     "labels_applied": False,
                     "label_error": (
-                        "Transaction was created, but the legacy API response "
+                        "Transaction was created, but the Firestore response "
                         "did not contain its UUID"
+                    ),
+                }
+            )
+            return
+        if not isinstance(firestore_wallet_id, str) or not firestore_wallet_id:
+            result.update(
+                {
+                    "status": "created_labels_failed",
+                    "labels_applied": False,
+                    "label_error": (
+                        "Transaction was created, but the Firestore wallet ID "
+                        "was missing from the response"
                     ),
                 }
             )
@@ -309,8 +330,8 @@ class SpendeeGateway:
 
         try:
             label_result = self._call(
-                "set_legacy_transaction_labels",
-                wallet_id,
+                "set_transaction_labels",
+                firestore_wallet_id,
                 transaction_uuid,
                 labels,
             )

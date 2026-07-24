@@ -53,11 +53,12 @@ class FakeSpendee:
             {"id": 31, "wallet_id": 11, "category_id": 21, "amount": 1000},
         ]
 
-    def create_transaction(self, **kwargs: Any) -> dict[str, Any]:
+    def create_firestore_transaction(self, **kwargs: Any) -> dict[str, Any]:
         self.created.append(kwargs)
         return {
             "id": 99,
             "uuid": "transaction-uuid",
+            "firestore_wallet_id": "wallet-uuid",
             "firestore_labels": {
                 "changed": True,
                 "labels": kwargs.get("labels") or [],
@@ -69,9 +70,9 @@ class FakeSpendee:
     def list_labels(self) -> list[dict[str, str]]:
         return [{"id": "taxi-id", "name": "такси"}]
 
-    def set_legacy_transaction_labels(
+    def set_transaction_labels(
         self,
-        legacy_wallet_id: int,
+        firestore_wallet_id: str,
         transaction_uuid: str,
         labels: list[str],
     ) -> dict[str, Any]:
@@ -171,6 +172,8 @@ def test_create_transaction_requires_preview_then_confirmation(
     assert created["labels_applied"] is True
     assert fake_api.created[0]["amount"] == -12.5
     assert fake_api.created[0]["labels"] == ["такси"]
+    assert fake_api.created[0]["timezone_name"] == "Europe/Moscow"
+    assert fake_api.created[0]["timezone_offset_seconds"] == 10800
 
     duplicate = gateway.create_transaction(**arguments, confirm=True, request_id="lunch-20260723")
     assert duplicate["deduplicated"] is True
