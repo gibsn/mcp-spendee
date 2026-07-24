@@ -1,0 +1,14 @@
+[Unit]
+Description=Update Telegram Spendee bot from origin/main and restart it
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=@HOME@
+Environment=CODEX_HOME=@CODEX_HOME@
+Environment=REPO_DIR=@BOT_REPO@
+Environment=UPDATE_REMOTE=origin
+Environment=UPDATE_BRANCH=main
+Environment=SERVICE_NAME=telegram-spendee-bot.service
+ExecStart=@BOT_REPO@/scripts/update-and-restart.sh

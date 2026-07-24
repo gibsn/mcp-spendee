@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll origin/main for Telegram Spendee bot updates
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Persistent=true
+Unit=telegram-spendee-bot-update.service
+
+[Install]
+WantedBy=timers.target
