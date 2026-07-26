@@ -65,15 +65,19 @@ def create_transaction(
     note: str | None = None,
     labels: list[str] | None = None,
     occurred_at: str | None = None,
+    currency: str | None = None,
+    exchange_rate: float | None = None,
     confirm: bool = False,
     request_id: str | None = None,
 ) -> dict[str, Any]:
     """Preview or create a transaction.
 
     Amount must always be positive. transaction_type controls whether Spendee
-    receives a negative expense or positive income. First call with
-    confirm=false; create only after checking the preview, then pass
-    confirm=true and a unique request_id.
+    receives a negative expense or positive income. currency defaults to the
+    selected wallet's currency. For a different currency, preview without an
+    exchange_rate first, then confirm with the returned foreign_rate as
+    exchange_rate. First call with confirm=false; create only after checking
+    the preview, then pass confirm=true and a unique request_id.
     """
     return _gateway.create_transaction(
         wallet_id=wallet_id,
@@ -83,6 +87,8 @@ def create_transaction(
         note=note,
         labels=labels,
         occurred_at=occurred_at,
+        currency=currency,
+        exchange_rate=exchange_rate,
         confirm=confirm,
         request_id=request_id,
     )

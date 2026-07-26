@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -49,9 +50,24 @@ class FakeSpendee:
         assert offset == 0
         assert limit == 100
         return [
-            {"id": 30, "wallet_id": 10, "category_id": 20, "amount": -12.5},
+            {
+                "id": 30,
+                "wallet_id": 10,
+                "category_id": 20,
+                "amount": -12.5,
+                "foreign_rate": 0.02,
+            },
             {"id": 31, "wallet_id": 11, "category_id": 21, "amount": 1000},
         ]
+
+    def get_currency_exchange_rate(
+        self,
+        source_currency: str,
+        target_currency: str,
+    ) -> str:
+        assert source_currency == "THB"
+        assert target_currency == "EUR"
+        return "0.02"
 
     def create_firestore_transaction(self, **kwargs: Any) -> dict[str, Any]:
         self.created.append(kwargs)
@@ -146,6 +162,7 @@ def test_list_transactions_filters_by_wallet(gateway: SpendeeGateway) -> None:
     transactions = gateway.list_transactions(wallet_id=10)
 
     assert [transaction["id"] for transaction in transactions] == [30]
+    assert transactions[0]["foreign_rate"] == 0.02
 
 
 def test_create_transaction_requires_preview_then_confirmation(
@@ -178,6 +195,59 @@ def test_create_transaction_requires_preview_then_confirmation(
     duplicate = gateway.create_transaction(**arguments, confirm=True, request_id="lunch-20260723")
     assert duplicate["deduplicated"] is True
     assert len(fake_api.created) == 1
+
+
+def test_create_transaction_preserves_foreign_amount_and_rate(
+    gateway: SpendeeGateway,
+    fake_api: FakeSpendee,
+) -> None:
+    arguments = {
+        "wallet_id": 10,
+        "category_id": 20,
+        "amount": 1200,
+        "currency": "thb",
+        "transaction_type": "expense",
+        "note": "Ferry",
+        "labels": ["такси"],
+        "occurred_at": "2026-07-26T11:12:00+03:00",
+    }
+
+    preview = gateway.create_transaction(**arguments)
+
+    assert preview["transaction"] == {
+        "wallet_id": 10,
+        "category_id": 20,
+        "amount": -24.0,
+        "currency": "EUR",
+        "transaction_type": "expense",
+        "note": "Ferry",
+        "labels": ["такси"],
+        "occurred_at": "2026-07-26T11:12:00",
+        "foreign_amount": -1200.0,
+        "foreign_currency": "THB",
+        "foreign_rate": 0.02,
+    }
+    assert fake_api.created == []
+
+    with pytest.raises(ValueError, match="exchange_rate from the preview"):
+        gateway.create_transaction(
+            **arguments,
+            confirm=True,
+            request_id="ferry-without-rate",
+        )
+
+    created = gateway.create_transaction(
+        **arguments,
+        exchange_rate=preview["transaction"]["foreign_rate"],
+        confirm=True,
+        request_id="ferry-20260726",
+    )
+
+    assert created["status"] == "created"
+    assert fake_api.created[0]["amount"] == Decimal("-24")
+    assert fake_api.created[0]["foreign_currency"] == "THB"
+    assert fake_api.created[0]["foreign_amount"] == "-1200"
+    assert fake_api.created[0]["foreign_rate"] == "0.02"
 
 
 def test_create_transaction_rejects_invalid_amount(gateway: SpendeeGateway) -> None:

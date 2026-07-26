@@ -18,7 +18,8 @@ categories, and transactions, and create income or expense transactions.
 - `list_categories` — list and optionally filter categories.
 - `list_transactions` — list and optionally filter transactions.
 - `create_transaction` — preview or create an expense/income transaction,
-  optionally with existing modern labels.
+  optionally with existing modern labels and an amount in a currency different
+  from the selected wallet.
 
 Creating a transaction is deliberately two-step. Call `create_transaction` once
 with `confirm=false` to inspect the normalized payload, then repeat it with
@@ -28,6 +29,12 @@ The forked `spendee` library owns both the legacy transaction call and modern
 Firestore label write. If label attachment fails after transaction creation, a
 retry with the same `request_id` retries only the labels and does not create the
 transaction twice.
+
+For a foreign-currency transaction, pass the original positive `amount` and its
+ISO `currency`. The preview resolves Spendee's current exchange rate and shows
+both the wallet amount and the original amount. Repeat the confirmed call with
+the preview's `foreign_rate` in `exchange_rate`; this pins the exact conversion
+that was reviewed instead of silently fetching a newer rate.
 
 ## Installation
 

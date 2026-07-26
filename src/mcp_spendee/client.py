@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import threading
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -172,6 +173,7 @@ class SpendeeGateway:
             "hashtags",
             "foreign_currency",
             "foreign_amount",
+            "foreign_rate",
             "type",
             "status",
         )
@@ -191,13 +193,61 @@ class SpendeeGateway:
         note: str | None = None,
         labels: list[str] | None = None,
         occurred_at: str | None = None,
+        currency: str | None = None,
+        exchange_rate: float | None = None,
         confirm: bool = False,
         request_id: str | None = None,
     ) -> dict[str, Any]:
         if amount <= 0:
             raise ValueError("amount must be positive; transaction_type determines its sign")
 
-        signed_amount = -amount if transaction_type == "expense" else amount
+        wallet = self._resolve_wallet(wallet_id)
+        wallet_currency = str(wallet.get("currency") or "").strip().upper()
+        if not wallet_currency:
+            raise SpendeeClientError("Selected Spendee wallet has no currency")
+        transaction_currency = (currency or wallet_currency).strip().upper()
+        if not transaction_currency:
+            raise ValueError("currency must not be empty")
+
+        try:
+            input_amount = Decimal(str(amount))
+        except InvalidOperation as exc:
+            raise ValueError("amount must be a finite decimal number") from exc
+        if not input_amount.is_finite():
+            raise ValueError("amount must be a finite decimal number")
+        signed_input_amount = -input_amount if transaction_type == "expense" else input_amount
+        is_foreign = transaction_currency != wallet_currency
+        resolved_exchange_rate: Decimal | None = None
+        foreign_amount: Decimal | None = None
+        if is_foreign:
+            if exchange_rate is None:
+                if confirm:
+                    raise ValueError(
+                        "exchange_rate from the preview is required when "
+                        "confirming a foreign-currency transaction"
+                    )
+                rate_value = self._call(
+                    "get_currency_exchange_rate",
+                    transaction_currency,
+                    wallet_currency,
+                )
+            else:
+                rate_value = exchange_rate
+            try:
+                resolved_exchange_rate = Decimal(str(rate_value))
+            except InvalidOperation as exc:
+                raise ValueError("exchange_rate must be a finite decimal number") from exc
+            if not resolved_exchange_rate.is_finite() or resolved_exchange_rate <= 0:
+                raise ValueError("exchange_rate must be positive")
+            foreign_amount = signed_input_amount
+            signed_amount = signed_input_amount * resolved_exchange_rate
+        else:
+            if exchange_rate is not None:
+                raise ValueError(
+                    "exchange_rate is only valid when currency differs from the wallet currency"
+                )
+            signed_amount = signed_input_amount
+
         start_date = self._parse_datetime(occurred_at)
         normalized_labels: list[str] = []
         seen_labels: set[str] = set()
@@ -212,12 +262,23 @@ class SpendeeGateway:
         preview = {
             "wallet_id": wallet_id,
             "category_id": category_id,
-            "amount": signed_amount,
+            "amount": float(signed_amount),
+            "currency": wallet_currency,
             "transaction_type": transaction_type,
             "note": note,
             "labels": normalized_labels,
             "occurred_at": start_date.isoformat(timespec="seconds"),
         }
+        if is_foreign:
+            assert foreign_amount is not None
+            assert resolved_exchange_rate is not None
+            preview.update(
+                {
+                    "foreign_amount": float(foreign_amount),
+                    "foreign_currency": transaction_currency,
+                    "foreign_rate": float(resolved_exchange_rate),
+                }
+            )
 
         if not confirm:
             return {
@@ -259,6 +320,15 @@ class SpendeeGateway:
                         int(offset.total_seconds()) if offset is not None else 0
                     ),
                     labels=normalized_labels or None,
+                    foreign_currency=transaction_currency if is_foreign else None,
+                    foreign_amount=(
+                        format(foreign_amount, "f") if foreign_amount is not None else None
+                    ),
+                    foreign_rate=(
+                        format(resolved_exchange_rate, "f")
+                        if resolved_exchange_rate is not None
+                        else None
+                    ),
                 )
             except SpendeeFirestoreError as exc:
                 if not normalized_labels or not isinstance(exc.response, dict):
@@ -291,6 +361,16 @@ class SpendeeGateway:
                 result["label_result"] = response.get("firestore_labels")
             self._write_results[normalized_request_id] = result
             return result
+
+    def _resolve_wallet(self, wallet_id: int) -> dict[str, Any]:
+        matches = [
+            wallet for wallet in self._call("wallet_get_all") if wallet.get("id") == wallet_id
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Expected one Spendee wallet with id {wallet_id}, found {len(matches)}"
+            )
+        return matches[0]
 
     def _retry_labels(
         self,

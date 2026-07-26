@@ -432,7 +432,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", specifier = ">=1.27,<2" },
-    { name = "spendee", git = "https://github.com/gibsn/spendee.git?rev=a4aa785" },
+    { name = "spendee", git = "https://github.com/gibsn/spendee.git?rev=a6df4faaca2c9501d07545191a986f0144ec699a" },
 ]
 
 [package.metadata.requires-dev]
@@ -872,7 +872,7 @@ wheels = [
 [[package]]
 name = "spendee"
 version = "1.1.0"
-source = { git = "https://github.com/gibsn/spendee.git?rev=a4aa785#a4aa785bc9131163952b013f485f8a536306064a" }
+source = { git = "https://github.com/gibsn/spendee.git?rev=a6df4faaca2c9501d07545191a986f0144ec699a#a6df4faaca2c9501d07545191a986f0144ec699a" }
 dependencies = [
     { name = "requests" },
 ]
