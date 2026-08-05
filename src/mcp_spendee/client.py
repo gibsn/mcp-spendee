@@ -41,6 +41,11 @@ class _ConfiguredSpendee(Spendee):
         url: str = "auth/login",
         **kwargs: Any,
     ) -> None:
+        # The inherited request method attaches any current bearer token even
+        # to Firebase credential requests. An expired token therefore prevents
+        # Firebase from processing the email/password login at all.
+        self._access_token = None
+        self._device_uuid = None
         refresh_token = self._get_refresh_token(self._email, self._password)
         self._access_token = self._get_access_token(refresh_token)
         kwargs["json"] = {
@@ -102,6 +107,12 @@ class SpendeeGateway:
                     status_code = getattr(response, "status_code", None)
                     if attempt == 0 and status_code in {401, 403}:
                         try:
+                            # The archived client adds its current bearer token to the
+                            # Firebase password-login request. If that token has expired,
+                            # Firebase rejects the login itself before checking the
+                            # credentials, so discard all session authentication state.
+                            api._access_token = None
+                            api._device_uuid = None
                             api.user_login()
                         except SpendeeError as login_exc:
                             raise SpendeeClientError(

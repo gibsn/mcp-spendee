@@ -4,10 +4,10 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from requests import HTTPError, Response
+from requests import HTTPError, Response, Session
 from spendee.exceptions import SpendeeError
 
-from mcp_spendee.client import SpendeeGateway
+from mcp_spendee.client import SpendeeGateway, _ConfiguredSpendee
 from mcp_spendee.config import ConfigurationError, Settings
 
 
@@ -135,6 +135,37 @@ def test_missing_credentials_fail_only_when_api_is_used() -> None:
         gateway.list_wallets()
 
 
+def test_login_discards_expired_session_authentication(monkeypatch: pytest.MonkeyPatch) -> None:
+    api = _ConfiguredSpendee(
+        "test@example.com",
+        "secret",
+        timezone="Europe/Moscow",
+        global_currency="EUR",
+    )
+    api._access_token = "expired-token"
+    api._device_uuid = "stale-device-uuid"
+
+    def get_refresh_token(email: str, password: str) -> str:
+        assert email == "test@example.com"
+        assert password == "secret"
+        assert api._access_token is None
+        assert api._device_uuid is None
+        return "fresh-refresh-token"
+
+    monkeypatch.setattr(api, "_get_refresh_token", get_refresh_token)
+    monkeypatch.setattr(api, "_get_access_token", lambda token: "fresh-access-token")
+    monkeypatch.setattr(
+        Session,
+        "post",
+        lambda self, **kwargs: {"device_uuid": "fresh-device-uuid"},
+    )
+
+    api.user_login()
+
+    assert api._access_token == "fresh-access-token"
+    assert api._device_uuid == "fresh-device-uuid"
+
+
 def test_list_wallets_returns_safe_subset(gateway: SpendeeGateway) -> None:
     assert gateway.list_wallets() == [
         {
@@ -155,8 +186,12 @@ def test_api_call_reauthenticates_once_after_expired_token() -> None:
             super().__init__()
             self.login_calls = 0
             self.wallet_calls = 0
+            self._access_token = "expired-token"
+            self._device_uuid = "stale-device-uuid"
 
         def user_login(self) -> None:
+            assert self._access_token is None
+            assert self._device_uuid is None
             self.login_calls += 1
 
         def wallet_get_all(self) -> list[dict[str, Any]]:
