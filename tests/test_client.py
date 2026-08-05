@@ -4,6 +4,8 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from requests import HTTPError, Response
+from spendee.exceptions import SpendeeError
 
 from mcp_spendee.client import SpendeeGateway
 from mcp_spendee.config import ConfigurationError, Settings
@@ -145,6 +147,69 @@ def test_list_wallets_returns_safe_subset(gateway: SpendeeGateway) -> None:
             "is_my": True,
         }
     ]
+
+
+def test_api_call_reauthenticates_once_after_expired_token() -> None:
+    class ExpiredTokenSpendee(FakeSpendee):
+        def __init__(self) -> None:
+            super().__init__()
+            self.login_calls = 0
+            self.wallet_calls = 0
+
+        def user_login(self) -> None:
+            self.login_calls += 1
+
+        def wallet_get_all(self) -> list[dict[str, Any]]:
+            self.wallet_calls += 1
+            if self.wallet_calls == 1:
+                response = Response()
+                response.status_code = 401
+                try:
+                    raise HTTPError(response=response)
+                except HTTPError as exc:
+                    raise SpendeeError(
+                        "Spendee returned a non-200 HTTP code.", response=response
+                    ) from exc
+            return super().wallet_get_all()
+
+    api = ExpiredTokenSpendee()
+    settings = Settings(email="test@example.com", password="secret")
+    gateway = SpendeeGateway(settings, api_factory=lambda: api)
+
+    assert gateway.list_wallets()[0]["id"] == 10
+    assert api.login_calls == 1
+    assert api.wallet_calls == 2
+
+
+def test_api_call_does_not_retry_non_authentication_errors() -> None:
+    class FailingSpendee(FakeSpendee):
+        def __init__(self) -> None:
+            super().__init__()
+            self.login_calls = 0
+            self.wallet_calls = 0
+
+        def user_login(self) -> None:
+            self.login_calls += 1
+
+        def wallet_get_all(self) -> list[dict[str, Any]]:
+            self.wallet_calls += 1
+            response = Response()
+            response.status_code = 500
+            try:
+                raise HTTPError(response=response)
+            except HTTPError as exc:
+                raise SpendeeError(
+                    "Spendee returned a non-200 HTTP code.", response=response
+                ) from exc
+
+    api = FailingSpendee()
+    settings = Settings(email="test@example.com", password="secret")
+    gateway = SpendeeGateway(settings, api_factory=lambda: api)
+
+    with pytest.raises(RuntimeError, match="Spendee API request failed"):
+        gateway.list_wallets()
+    assert api.login_calls == 0
+    assert api.wallet_calls == 1
 
 
 def test_list_labels_uses_forked_spendee_client(gateway: SpendeeGateway) -> None:

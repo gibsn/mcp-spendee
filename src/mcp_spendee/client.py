@@ -91,12 +91,28 @@ class SpendeeGateway:
 
     def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         with self._lock:
-            try:
-                return getattr(self._get_api(), method)(*args, **kwargs)
-            except SpendeeError as exc:
-                raise SpendeeClientError(f"Spendee API request failed: {exc}") from exc
-            except (KeyError, TypeError, ValueError) as exc:
-                raise SpendeeClientError(f"Unexpected Spendee API response: {exc}") from exc
+            api = self._get_api()
+            for attempt in range(2):
+                try:
+                    return getattr(api, method)(*args, **kwargs)
+                except SpendeeError as exc:
+                    response = getattr(exc, "response", None)
+                    if response is None:
+                        response = getattr(exc.__cause__, "response", None)
+                    status_code = getattr(response, "status_code", None)
+                    if attempt == 0 and status_code in {401, 403}:
+                        try:
+                            api.user_login()
+                        except SpendeeError as login_exc:
+                            raise SpendeeClientError(
+                                f"Spendee authentication failed: {login_exc}"
+                            ) from login_exc
+                        continue
+                    raise SpendeeClientError(f"Spendee API request failed: {exc}") from exc
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise SpendeeClientError(f"Unexpected Spendee API response: {exc}") from exc
+
+            raise AssertionError("Spendee API retry loop exited unexpectedly")
 
     def list_wallets(self) -> list[dict[str, Any]]:
         wallets = self._call("wallet_get_all")
