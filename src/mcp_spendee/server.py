@@ -4,7 +4,11 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_spendee.client import SpendeeGateway, TransactionType
+from mcp_spendee.client import (
+    SpendeeGateway,
+    TransactionType,
+    WalletSelectionReason,
+)
 from mcp_spendee.config import Settings
 
 mcp = FastMCP(
@@ -59,6 +63,7 @@ def list_transactions(
 @mcp.tool()
 def create_transaction(
     wallet_id: int,
+    wallet_selection_reason: WalletSelectionReason,
     category_id: int,
     amount: float,
     transaction_type: TransactionType,
@@ -72,7 +77,11 @@ def create_transaction(
 ) -> dict[str, Any]:
     """Preview or create a transaction.
 
-    Amount must always be positive. transaction_type controls whether Spendee
+    Amount must always be positive. wallet_selection_reason records why the
+    wallet was selected: explicit_in_request for a wallet named by the user,
+    travel_rule for the configured travel exception, or ordinary_default when
+    no wallet was specified. ordinary_default is accepted only for
+    Операционка, and travel_rule only for Общий. transaction_type controls whether Spendee
     receives a negative expense or positive income. currency defaults to the
     selected wallet's currency. For a different currency, preview without an
     exchange_rate first, then confirm with the returned foreign_rate as
@@ -81,6 +90,7 @@ def create_transaction(
     """
     return _gateway.create_transaction(
         wallet_id=wallet_id,
+        wallet_selection_reason=wallet_selection_reason,
         category_id=category_id,
         amount=amount,
         transaction_type=transaction_type,

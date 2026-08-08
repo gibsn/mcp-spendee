@@ -14,6 +14,11 @@ from spendee.exceptions import SpendeeError
 from mcp_spendee.config import Settings
 
 TransactionType = Literal["expense", "income"]
+WalletSelectionReason = Literal[
+    "explicit_in_request",
+    "travel_rule",
+    "ordinary_default",
+]
 
 
 class SpendeeClientError(RuntimeError):
@@ -214,6 +219,7 @@ class SpendeeGateway:
         self,
         *,
         wallet_id: int,
+        wallet_selection_reason: WalletSelectionReason,
         category_id: int,
         amount: float,
         transaction_type: TransactionType,
@@ -229,6 +235,8 @@ class SpendeeGateway:
             raise ValueError("amount must be positive; transaction_type determines its sign")
 
         wallet = self._resolve_wallet(wallet_id)
+        wallet_name = str(wallet.get("name") or "").strip()
+        self._validate_wallet_selection(wallet_name, wallet_selection_reason)
         wallet_currency = str(wallet.get("currency") or "").strip().upper()
         if not wallet_currency:
             raise SpendeeClientError("Selected Spendee wallet has no currency")
@@ -288,6 +296,8 @@ class SpendeeGateway:
                 seen_labels.add(folded)
         preview = {
             "wallet_id": wallet_id,
+            "wallet_name": wallet_name,
+            "wallet_selection_reason": wallet_selection_reason,
             "category_id": category_id,
             "amount": float(signed_amount),
             "currency": wallet_currency,
@@ -388,6 +398,17 @@ class SpendeeGateway:
                 result["label_result"] = response.get("firestore_labels")
             self._write_results[normalized_request_id] = result
             return result
+
+    @staticmethod
+    def _validate_wallet_selection(
+        wallet_name: str,
+        wallet_selection_reason: WalletSelectionReason,
+    ) -> None:
+        normalized_name = wallet_name.casefold()
+        if wallet_selection_reason == "ordinary_default" and normalized_name != "операционка":
+            raise ValueError("ordinary_default transactions must use the Операционка wallet")
+        if wallet_selection_reason == "travel_rule" and normalized_name != "общий":
+            raise ValueError("travel_rule transactions must use the Общий wallet")
 
     def _resolve_wallet(self, wallet_id: int) -> dict[str, Any]:
         matches = [

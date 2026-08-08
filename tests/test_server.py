@@ -35,6 +35,13 @@ async def test_server_exposes_expected_tools(client_session: ClientSession) -> N
         "list_transactions",
         "create_transaction",
     }
+    create_tool = next(tool for tool in result.tools if tool.name == "create_transaction")
+    assert "wallet_selection_reason" in create_tool.inputSchema["required"]
+    assert create_tool.inputSchema["properties"]["wallet_selection_reason"]["enum"] == [
+        "explicit_in_request",
+        "travel_rule",
+        "ordinary_default",
+    ]
 
 
 @pytest.mark.anyio

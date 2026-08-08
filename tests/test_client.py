@@ -271,6 +271,7 @@ def test_create_transaction_requires_preview_then_confirmation(
 ) -> None:
     arguments = {
         "wallet_id": 10,
+        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": 12.5,
         "transaction_type": "expense",
@@ -303,6 +304,7 @@ def test_create_transaction_preserves_foreign_amount_and_rate(
 ) -> None:
     arguments = {
         "wallet_id": 10,
+        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": 1200,
         "currency": "thb",
@@ -316,6 +318,8 @@ def test_create_transaction_preserves_foreign_amount_and_rate(
 
     assert preview["transaction"] == {
         "wallet_id": 10,
+        "wallet_name": "Cash",
+        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": -24.0,
         "currency": "EUR",
@@ -354,7 +358,70 @@ def test_create_transaction_rejects_invalid_amount(gateway: SpendeeGateway) -> N
     with pytest.raises(ValueError, match="amount must be positive"):
         gateway.create_transaction(
             wallet_id=10,
+            wallet_selection_reason="explicit_in_request",
             category_id=20,
             amount=-1,
             transaction_type="expense",
         )
+
+
+def test_create_transaction_rejects_general_wallet_for_ordinary_default() -> None:
+    class WalletRoutingSpendee(FakeSpendee):
+        def wallet_get_all(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": 7613265,
+                    "name": "Общий",
+                    "balance": 0,
+                    "currency": "RUB",
+                    "type": "default",
+                    "status": "active",
+                    "is_my": True,
+                }
+            ]
+
+    gateway = SpendeeGateway(
+        Settings(email="test@example.com", password="secret"),
+        api_factory=WalletRoutingSpendee,
+    )
+
+    with pytest.raises(ValueError, match="must use the Операционка wallet"):
+        gateway.create_transaction(
+            wallet_id=7613265,
+            wallet_selection_reason="ordinary_default",
+            category_id=20,
+            amount=290,
+            transaction_type="expense",
+        )
+
+
+def test_create_transaction_preview_includes_wallet_name_and_selection_reason() -> None:
+    class WalletRoutingSpendee(FakeSpendee):
+        def wallet_get_all(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": 2899807,
+                    "name": "Операционка",
+                    "balance": 0,
+                    "currency": "RUB",
+                    "type": "default",
+                    "status": "active",
+                    "is_my": True,
+                }
+            ]
+
+    gateway = SpendeeGateway(
+        Settings(email="test@example.com", password="secret"),
+        api_factory=WalletRoutingSpendee,
+    )
+
+    preview = gateway.create_transaction(
+        wallet_id=2899807,
+        wallet_selection_reason="ordinary_default",
+        category_id=20,
+        amount=290,
+        transaction_type="expense",
+    )
+
+    assert preview["transaction"]["wallet_name"] == "Операционка"
+    assert preview["transaction"]["wallet_selection_reason"] == "ordinary_default"
