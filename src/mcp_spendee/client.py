@@ -18,6 +18,7 @@ WalletSelectionReason = Literal[
     "explicit_in_request",
     "travel_rule",
     "ordinary_default",
+    "income_rule",
 ]
 
 
@@ -409,6 +410,8 @@ class SpendeeGateway:
             raise ValueError("ordinary_default transactions must use the Операционка wallet")
         if wallet_selection_reason == "travel_rule" and normalized_name != "общий":
             raise ValueError("travel_rule transactions must use the Общий wallet")
+        if wallet_selection_reason == "income_rule" and normalized_name != "общий":
+            raise ValueError("income_rule transactions must use the Общий wallet")
 
     def _resolve_wallet(self, wallet_id: int) -> dict[str, Any]:
         matches = [

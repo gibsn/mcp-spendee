@@ -395,6 +395,68 @@ def test_create_transaction_rejects_general_wallet_for_ordinary_default() -> Non
         )
 
 
+def test_create_transaction_accepts_income_rule_for_general_wallet() -> None:
+    class WalletRoutingSpendee(FakeSpendee):
+        def wallet_get_all(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": 7613265,
+                    "name": "Общий",
+                    "balance": 0,
+                    "currency": "RUB",
+                    "type": "default",
+                    "status": "active",
+                    "is_my": True,
+                }
+            ]
+
+    gateway = SpendeeGateway(
+        Settings(email="test@example.com", password="secret"),
+        api_factory=WalletRoutingSpendee,
+    )
+
+    preview = gateway.create_transaction(
+        wallet_id=7613265,
+        wallet_selection_reason="income_rule",
+        category_id=20,
+        amount=1000,
+        transaction_type="income",
+    )
+
+    assert preview["transaction"]["wallet_name"] == "Общий"
+    assert preview["transaction"]["wallet_selection_reason"] == "income_rule"
+
+
+def test_create_transaction_rejects_operational_wallet_for_income_rule() -> None:
+    class WalletRoutingSpendee(FakeSpendee):
+        def wallet_get_all(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": 2899807,
+                    "name": "Операционка",
+                    "balance": 0,
+                    "currency": "RUB",
+                    "type": "default",
+                    "status": "active",
+                    "is_my": True,
+                }
+            ]
+
+    gateway = SpendeeGateway(
+        Settings(email="test@example.com", password="secret"),
+        api_factory=WalletRoutingSpendee,
+    )
+
+    with pytest.raises(ValueError, match="must use the Общий wallet"):
+        gateway.create_transaction(
+            wallet_id=2899807,
+            wallet_selection_reason="income_rule",
+            category_id=20,
+            amount=1000,
+            transaction_type="income",
+        )
+
+
 def test_create_transaction_preview_includes_wallet_name_and_selection_reason() -> None:
     class WalletRoutingSpendee(FakeSpendee):
         def wallet_get_all(self) -> list[dict[str, Any]]:

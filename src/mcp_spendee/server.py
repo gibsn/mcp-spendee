@@ -80,8 +80,9 @@ def create_transaction(
     Amount must always be positive. wallet_selection_reason records why the
     wallet was selected: explicit_in_request for a wallet named by the user,
     travel_rule for the configured travel exception, or ordinary_default when
-    no wallet was specified. ordinary_default is accepted only for
-    Операционка, and travel_rule only for Общий. transaction_type controls whether Spendee
+    no wallet was specified for an expense, or income_rule for the configured
+    income destination. ordinary_default is accepted only for Операционка,
+    and travel_rule and income_rule only for Общий. transaction_type controls whether Spendee
     receives a negative expense or positive income. currency defaults to the
     selected wallet's currency. For a different currency, preview without an
     exchange_rate first, then confirm with the returned foreign_rate as

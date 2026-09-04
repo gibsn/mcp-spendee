@@ -41,6 +41,7 @@ async def test_server_exposes_expected_tools(client_session: ClientSession) -> N
         "explicit_in_request",
         "travel_rule",
         "ordinary_default",
+        "income_rule",
     ]
 
 
