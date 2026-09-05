@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=1.27,<2",
-    "spendee @ git+https://github.com/gibsn/spendee.git@32b15169ea25d7f3db7ed920be05680143dad756",
+    "spendee @ git+https://github.com/gibsn/spendee.git@872192934430b057ad22c02508625c4d7ae87a11",
 ]
 
 [project.scripts]
