@@ -7,13 +7,13 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from requests import Session
 from spendee import Spendee, SpendeeFirestoreError
 from spendee.exceptions import SpendeeError
 
 from mcp_spendee.config import Settings
 
 TransactionType = Literal["expense", "income"]
+ResourceId = int | str
 WalletSelectionReason = Literal[
     "explicit_in_request",
     "travel_rule",
@@ -27,7 +27,7 @@ class SpendeeClientError(RuntimeError):
 
 
 class _ConfiguredSpendee(Spendee):
-    """Spendee client with configurable login metadata instead of library defaults."""
+    """Spendee client authenticated directly with Firebase for Firestore access."""
 
     def __init__(
         self,
@@ -47,27 +47,27 @@ class _ConfiguredSpendee(Spendee):
         url: str = "auth/login",
         **kwargs: Any,
     ) -> None:
-        # The inherited request method attaches any current bearer token even
-        # to Firebase credential requests. An expired token therefore prevents
-        # Firebase from processing the email/password login at all.
+        # The legacy api.spendee.com login endpoint is no longer needed for the
+        # Firestore backend and may hang. Keep this hook because the upstream
+        # Firestore client calls user_login when it needs a fresh Firebase token.
         self._access_token = None
         self._device_uuid = None
         refresh_token = self._get_refresh_token(self._email, self._password)
         self._access_token = self._get_access_token(refresh_token)
-        kwargs["json"] = {
-            "global_currency": self._configured_global_currency,
-            "default_wallet_name": "Cash Wallet",
-            "timezone": self._configured_timezone,
-            "platform": "web",
-            "version": "master",
-            "credential": None,
-        }
-        result = Session.post(self, url=url, version=version, **kwargs)
-        self._device_uuid = result["device_uuid"]
 
 
 def _pick(item: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: item.get(field) for field in fields}
+
+
+def _public_id(item: dict[str, Any]) -> ResourceId | None:
+    legacy_id = item.get("legacy_id")
+    if isinstance(legacy_id, int) and not isinstance(legacy_id, bool):
+        return legacy_id
+    firestore_id = item.get("id")
+    if isinstance(firestore_id, str) and firestore_id:
+        return firestore_id
+    return None
 
 
 class SpendeeGateway:
@@ -132,21 +132,19 @@ class SpendeeGateway:
             raise AssertionError("Spendee API retry loop exited unexpectedly")
 
     def list_wallets(self) -> list[dict[str, Any]]:
-        wallets = self._call("wallet_get_all")
+        wallets = self._call("list_firestore_wallets")
         return [
-            _pick(
-                wallet,
-                (
-                    "id",
-                    "name",
-                    "balance",
-                    "currency",
-                    "type",
-                    "status",
-                    "is_my",
-                ),
-            )
+            {
+                "id": public_id,
+                "name": wallet.get("name"),
+                "balance": None,
+                "currency": wallet.get("currency"),
+                "type": wallet.get("type"),
+                "status": wallet.get("status"),
+                "is_my": None,
+            }
             for wallet in wallets
+            if (public_id := _public_id(wallet)) is not None
         ]
 
     def list_labels(self) -> list[dict[str, str]]:
@@ -155,27 +153,31 @@ class SpendeeGateway:
     def list_categories(
         self,
         *,
-        wallet_id: int | None = None,
+        wallet_id: ResourceId | None = None,
         category_type: TransactionType | None = None,
     ) -> list[dict[str, Any]]:
-        categories = self._call("get_all_user_categories")
+        categories = self._call("list_firestore_categories")
+        available_wallet_ids = [wallet["id"] for wallet in self.list_wallets()]
+        if wallet_id is not None:
+            if wallet_id not in available_wallet_ids:
+                return []
+            available_wallet_ids = [wallet_id]
         result: list[dict[str, Any]] = []
         for category in categories:
+            public_id = _public_id(category)
+            if public_id is None:
+                continue
             if category_type is not None and category.get("type") != category_type:
                 continue
-            wallet_settings = category.get("wallets_settings") or []
-            if wallet_id is not None and not any(
-                setting.get("wallet_id") == wallet_id and setting.get("visible", 1)
-                for setting in wallet_settings
-            ):
-                continue
-            selected = _pick(
-                category,
-                ("id", "name", "type", "color", "status", "image_id"),
-            )
-            selected["wallet_ids"] = [
-                setting.get("wallet_id") for setting in wallet_settings if setting.get("visible", 1)
-            ]
+            selected = {
+                "id": public_id,
+                "name": category.get("name"),
+                "type": category.get("type"),
+                "color": None,
+                "status": category.get("state"),
+                "image_id": None,
+                "wallet_ids": available_wallet_ids,
+            }
             result.append(selected)
         return result
 
@@ -219,9 +221,9 @@ class SpendeeGateway:
     def create_transaction(
         self,
         *,
-        wallet_id: int,
+        wallet_id: ResourceId,
         wallet_selection_reason: WalletSelectionReason,
-        category_id: int,
+        category_id: ResourceId,
         amount: float,
         transaction_type: TransactionType,
         note: str | None = None,
@@ -413,10 +415,8 @@ class SpendeeGateway:
         if wallet_selection_reason == "income_rule" and normalized_name != "общий":
             raise ValueError("income_rule transactions must use the Общий wallet")
 
-    def _resolve_wallet(self, wallet_id: int) -> dict[str, Any]:
-        matches = [
-            wallet for wallet in self._call("wallet_get_all") if wallet.get("id") == wallet_id
-        ]
+    def _resolve_wallet(self, wallet_id: ResourceId) -> dict[str, Any]:
+        matches = [wallet for wallet in self.list_wallets() if wallet.get("id") == wallet_id]
         if len(matches) != 1:
             raise ValueError(
                 f"Expected one Spendee wallet with id {wallet_id}, found {len(matches)}"

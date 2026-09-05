@@ -14,8 +14,13 @@ from mcp_spendee.config import ConfigurationError, Settings
 class FakeSpendee:
     def __init__(self) -> None:
         self.created: list[dict[str, Any]] = []
+        self.legacy_wallet_calls = 0
+        self.firestore_wallet_calls = 0
+        self.legacy_category_calls = 0
+        self.firestore_category_calls = 0
 
     def wallet_get_all(self) -> list[dict[str, Any]]:
+        self.legacy_wallet_calls += 1
         return [
             {
                 "id": 10,
@@ -29,7 +34,29 @@ class FakeSpendee:
             }
         ]
 
+    def list_firestore_wallets(self) -> list[dict[str, Any]]:
+        self.firestore_wallet_calls += 1
+        return [
+            {
+                "id": "wallet-uuid",
+                "legacy_id": 10,
+                "name": "Cash",
+                "currency": "EUR",
+                "type": "default",
+                "status": "active",
+            },
+            {
+                "id": "general-wallet-uuid",
+                "legacy_id": None,
+                "name": "Общий",
+                "currency": "RUB",
+                "type": "cash",
+                "status": "active",
+            },
+        ]
+
     def get_all_user_categories(self) -> list[dict[str, Any]]:
+        self.legacy_category_calls += 1
         return [
             {
                 "id": 20,
@@ -45,6 +72,32 @@ class FakeSpendee:
                 "name": "Salary",
                 "type": "income",
                 "wallets_settings": [{"wallet_id": 11, "visible": 1}],
+            },
+        ]
+
+    def list_firestore_categories(self) -> list[dict[str, Any]]:
+        self.firestore_category_calls += 1
+        return [
+            {
+                "id": "food-uuid",
+                "legacy_id": 20,
+                "name": "Food",
+                "type": "expense",
+                "state": "active",
+            },
+            {
+                "id": "salary-uuid",
+                "legacy_id": 21,
+                "name": "Salary",
+                "type": "income",
+                "state": "active",
+            },
+            {
+                "id": "music-category-uuid",
+                "legacy_id": None,
+                "name": "Музыка",
+                "type": "expense",
+                "state": "active",
             },
         ]
 
@@ -135,7 +188,9 @@ def test_missing_credentials_fail_only_when_api_is_used() -> None:
         gateway.list_wallets()
 
 
-def test_login_discards_expired_session_authentication(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_login_refreshes_firebase_without_calling_legacy_spendee_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     api = _ConfiguredSpendee(
         "test@example.com",
         "secret",
@@ -157,13 +212,13 @@ def test_login_discards_expired_session_authentication(monkeypatch: pytest.Monke
     monkeypatch.setattr(
         Session,
         "post",
-        lambda self, **kwargs: {"device_uuid": "fresh-device-uuid"},
+        lambda self, **kwargs: pytest.fail("legacy Spendee login must not be called"),
     )
 
     api.user_login()
 
     assert api._access_token == "fresh-access-token"
-    assert api._device_uuid == "fresh-device-uuid"
+    assert api._device_uuid is None
 
 
 def test_list_wallets_returns_safe_subset(gateway: SpendeeGateway) -> None:
@@ -171,13 +226,25 @@ def test_list_wallets_returns_safe_subset(gateway: SpendeeGateway) -> None:
         {
             "id": 10,
             "name": "Cash",
-            "balance": 42.5,
+            "balance": None,
             "currency": "EUR",
             "type": "default",
             "status": "active",
-            "is_my": True,
-        }
+            "is_my": None,
+        },
+        {
+            "id": "general-wallet-uuid",
+            "name": "Общий",
+            "balance": None,
+            "currency": "RUB",
+            "type": "cash",
+            "status": "active",
+            "is_my": None,
+        },
     ]
+    api = gateway._get_api()
+    assert api.firestore_wallet_calls == 1
+    assert api.legacy_wallet_calls == 0
 
 
 def test_api_call_reauthenticates_once_after_expired_token() -> None:
@@ -194,7 +261,7 @@ def test_api_call_reauthenticates_once_after_expired_token() -> None:
             assert self._device_uuid is None
             self.login_calls += 1
 
-        def wallet_get_all(self) -> list[dict[str, Any]]:
+        def list_firestore_wallets(self) -> list[dict[str, Any]]:
             self.wallet_calls += 1
             if self.wallet_calls == 1:
                 response = Response()
@@ -205,7 +272,7 @@ def test_api_call_reauthenticates_once_after_expired_token() -> None:
                     raise SpendeeError(
                         "Spendee returned a non-200 HTTP code.", response=response
                     ) from exc
-            return super().wallet_get_all()
+            return super().list_firestore_wallets()
 
     api = ExpiredTokenSpendee()
     settings = Settings(email="test@example.com", password="secret")
@@ -226,7 +293,7 @@ def test_api_call_does_not_retry_non_authentication_errors() -> None:
         def user_login(self) -> None:
             self.login_calls += 1
 
-        def wallet_get_all(self) -> list[dict[str, Any]]:
+        def list_firestore_wallets(self) -> list[dict[str, Any]]:
             self.wallet_calls += 1
             response = Response()
             response.status_code = 500
@@ -254,8 +321,35 @@ def test_list_labels_uses_forked_spendee_client(gateway: SpendeeGateway) -> None
 def test_list_categories_filters_by_wallet_and_type(gateway: SpendeeGateway) -> None:
     categories = gateway.list_categories(wallet_id=10, category_type="expense")
 
-    assert [category["id"] for category in categories] == [20]
+    assert [category["id"] for category in categories] == [20, "music-category-uuid"]
     assert categories[0]["wallet_ids"] == [10]
+    api = gateway._get_api()
+    assert api.firestore_category_calls == 1
+    assert api.legacy_category_calls == 0
+
+
+def test_create_transaction_accepts_firestore_only_ids(
+    gateway: SpendeeGateway,
+    fake_api: FakeSpendee,
+) -> None:
+    arguments = {
+        "wallet_id": "general-wallet-uuid",
+        "wallet_selection_reason": "income_rule",
+        "category_id": "music-category-uuid",
+        "amount": 1000,
+        "transaction_type": "income",
+    }
+
+    preview = gateway.create_transaction(**arguments)
+    assert preview["transaction"]["wallet_name"] == "Общий"
+
+    gateway.create_transaction(
+        **arguments,
+        confirm=True,
+        request_id="modern-only-ids",
+    )
+    assert fake_api.created[0]["legacy_wallet_id"] == "general-wallet-uuid"
+    assert fake_api.created[0]["legacy_category_id"] == "music-category-uuid"
 
 
 def test_list_transactions_filters_by_wallet(gateway: SpendeeGateway) -> None:
@@ -367,16 +461,15 @@ def test_create_transaction_rejects_invalid_amount(gateway: SpendeeGateway) -> N
 
 def test_create_transaction_rejects_general_wallet_for_ordinary_default() -> None:
     class WalletRoutingSpendee(FakeSpendee):
-        def wallet_get_all(self) -> list[dict[str, Any]]:
+        def list_firestore_wallets(self) -> list[dict[str, Any]]:
             return [
                 {
-                    "id": 7613265,
+                    "id": "general-wallet-uuid",
+                    "legacy_id": 7613265,
                     "name": "Общий",
-                    "balance": 0,
                     "currency": "RUB",
-                    "type": "default",
+                    "type": "cash",
                     "status": "active",
-                    "is_my": True,
                 }
             ]
 
@@ -397,16 +490,15 @@ def test_create_transaction_rejects_general_wallet_for_ordinary_default() -> Non
 
 def test_create_transaction_accepts_income_rule_for_general_wallet() -> None:
     class WalletRoutingSpendee(FakeSpendee):
-        def wallet_get_all(self) -> list[dict[str, Any]]:
+        def list_firestore_wallets(self) -> list[dict[str, Any]]:
             return [
                 {
-                    "id": 7613265,
+                    "id": "general-wallet-uuid",
+                    "legacy_id": 7613265,
                     "name": "Общий",
-                    "balance": 0,
                     "currency": "RUB",
-                    "type": "default",
+                    "type": "cash",
                     "status": "active",
-                    "is_my": True,
                 }
             ]
 
@@ -429,16 +521,15 @@ def test_create_transaction_accepts_income_rule_for_general_wallet() -> None:
 
 def test_create_transaction_rejects_operational_wallet_for_income_rule() -> None:
     class WalletRoutingSpendee(FakeSpendee):
-        def wallet_get_all(self) -> list[dict[str, Any]]:
+        def list_firestore_wallets(self) -> list[dict[str, Any]]:
             return [
                 {
-                    "id": 2899807,
+                    "id": "operations-wallet-uuid",
+                    "legacy_id": 2899807,
                     "name": "Операционка",
-                    "balance": 0,
                     "currency": "RUB",
-                    "type": "default",
+                    "type": "cash",
                     "status": "active",
-                    "is_my": True,
                 }
             ]
 
@@ -459,16 +550,15 @@ def test_create_transaction_rejects_operational_wallet_for_income_rule() -> None
 
 def test_create_transaction_preview_includes_wallet_name_and_selection_reason() -> None:
     class WalletRoutingSpendee(FakeSpendee):
-        def wallet_get_all(self) -> list[dict[str, Any]]:
+        def list_firestore_wallets(self) -> list[dict[str, Any]]:
             return [
                 {
-                    "id": 2899807,
+                    "id": "operations-wallet-uuid",
+                    "legacy_id": 2899807,
                     "name": "Операционка",
-                    "balance": 0,
                     "currency": "RUB",
-                    "type": "default",
+                    "type": "cash",
                     "status": "active",
-                    "is_my": True,
                 }
             ]
 

@@ -13,7 +13,7 @@ categories, and transactions, and create income or expense transactions.
 ## Tools
 
 - `spendee_status` — check local configuration without logging in or exposing secrets.
-- `list_wallets` — list wallet IDs, names, balances, and currencies.
+- `list_wallets` — list Firestore wallet IDs, names, states, and currencies.
 - `list_labels` — list modern Spendee labels stored in Firestore.
 - `list_categories` — list and optionally filter categories.
 - `list_transactions` — list and optionally filter transactions.
@@ -29,8 +29,12 @@ Every call must also state `wallet_selection_reason`: `explicit_in_request`,
 `travel_rule`, or `ordinary_default`. The server accepts `ordinary_default`
 only for the `Операционка` wallet and `travel_rule` only for `Общий`, so an
 agent cannot silently route an ordinary unspecified expense to `Общий`.
-The forked `spendee` library owns both the legacy transaction call and modern
-Firestore label write. If label attachment fails after transaction creation, a
+Wallet and category IDs are legacy integers when Spendee still provides them;
+newer resources use Firestore UUID strings. Both forms are accepted by
+`list_categories` and `create_transaction`.
+
+The forked `spendee` library owns both the modern Firestore transaction and
+label writes. If label attachment fails after transaction creation, a
 retry with the same `request_id` retries only the labels and does not create the
 transaction twice.
 

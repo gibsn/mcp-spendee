@@ -5,6 +5,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from mcp_spendee.client import (
+    ResourceId,
     SpendeeGateway,
     TransactionType,
     WalletSelectionReason,
@@ -31,7 +32,7 @@ def spendee_status() -> dict[str, object]:
 
 @mcp.tool()
 def list_wallets() -> list[dict[str, Any]]:
-    """List Spendee wallets with IDs, balances, and currencies."""
+    """List Spendee wallets with Firestore-compatible IDs and currencies."""
     return _gateway.list_wallets()
 
 
@@ -43,7 +44,7 @@ def list_labels() -> list[dict[str, str]]:
 
 @mcp.tool()
 def list_categories(
-    wallet_id: int | None = None,
+    wallet_id: ResourceId | None = None,
     category_type: TransactionType | None = None,
 ) -> list[dict[str, Any]]:
     """List Spendee categories, optionally filtered by wallet and expense/income type."""
@@ -62,9 +63,9 @@ def list_transactions(
 
 @mcp.tool()
 def create_transaction(
-    wallet_id: int,
+    wallet_id: ResourceId,
     wallet_selection_reason: WalletSelectionReason,
-    category_id: int,
+    category_id: ResourceId,
     amount: float,
     transaction_type: TransactionType,
     note: str | None = None,
