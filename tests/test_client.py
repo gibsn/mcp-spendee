@@ -497,6 +497,63 @@ def test_create_transaction_deduplicates_exact_content_across_request_ids(
     assert len(fake_api.created) == 1
 
 
+def test_duplicate_detection_canonicalizes_category_aliases(
+    gateway: SpendeeGateway,
+    fake_api: FakeSpendee,
+) -> None:
+    arguments = {
+        "wallet_id": 10,
+        "wallet_selection_reason": "explicit_in_request",
+        "amount": 12.5,
+        "transaction_type": "expense",
+        "note": "Lunch",
+        "occurred_at": "2026-09-14T12:00:00+03:00",
+        "confirm": True,
+    }
+    gateway.create_transaction(
+        **arguments,
+        category_id=20,
+        request_id="legacy-category-id",
+    )
+
+    duplicate = gateway.create_transaction(
+        **arguments,
+        category_id="food-uuid",
+        request_id="firestore-category-id",
+    )
+
+    assert duplicate["status"] == "existing"
+    assert len(fake_api.created) == 1
+
+
+def test_duplicate_detection_tolerates_sub_cent_wallet_rounding(
+    gateway: SpendeeGateway,
+    fake_api: FakeSpendee,
+) -> None:
+    arguments = {
+        "wallet_id": 10,
+        "wallet_selection_reason": "explicit_in_request",
+        "category_id": 20,
+        "amount": 17.22,
+        "currency": "THB",
+        "exchange_rate": 113.85046474816446,
+        "transaction_type": "expense",
+        "note": "Uber",
+        "occurred_at": "2026-09-12T12:00:00+03:00",
+        "confirm": True,
+    }
+    gateway.create_transaction(**arguments, request_id="original-write")
+    fake_api.created[0]["amount"] = Decimal("-1960.50500300")
+
+    duplicate = gateway.create_transaction(
+        **arguments,
+        request_id="rounded-readback-retry",
+    )
+
+    assert duplicate["status"] == "existing"
+    assert len(fake_api.created) == 1
+
+
 def test_duplicate_retry_repairs_labels_instead_of_creating_another_transaction(
     gateway: SpendeeGateway,
     fake_api: FakeSpendee,

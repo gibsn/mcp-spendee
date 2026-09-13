@@ -495,11 +495,23 @@ class SpendeeGateway:
             return result
 
     def _find_exact_transaction(self, preview: dict[str, Any]) -> dict[str, Any] | None:
+        wallet_aliases = self._resource_aliases(self._call("list_firestore_wallets"))
+        category_aliases = self._resource_aliases(self._call("list_firestore_categories"))
+        preview_signature = self._transaction_signature(
+            preview,
+            wallet_aliases=wallet_aliases,
+            category_aliases=category_aliases,
+        )
         transactions = self._call("list_firestore_transactions", preview["wallet_id"])
         for transaction in transactions:
             try:
-                matches = self._transaction_signature(transaction) == self._transaction_signature(
-                    preview
+                matches = (
+                    self._transaction_signature(
+                        transaction,
+                        wallet_aliases=wallet_aliases,
+                        category_aliases=category_aliases,
+                    )
+                    == preview_signature
                 )
             except (InvalidOperation, TypeError, ValueError):
                 continue
@@ -507,11 +519,23 @@ class SpendeeGateway:
                 return transaction
         return None
 
-    def _transaction_signature(self, transaction: dict[str, Any]) -> tuple[Any, ...]:
+    def _transaction_signature(
+        self,
+        transaction: dict[str, Any],
+        *,
+        wallet_aliases: dict[str, str],
+        category_aliases: dict[str, str],
+    ) -> tuple[Any, ...]:
         return (
-            str(transaction.get("wallet_id")),
-            str(transaction.get("category_id")),
-            Decimal(str(transaction.get("amount"))),
+            wallet_aliases.get(
+                str(transaction.get("wallet_id")),
+                str(transaction.get("wallet_id")),
+            ),
+            category_aliases.get(
+                str(transaction.get("category_id")),
+                str(transaction.get("category_id")),
+            ),
+            self._minor_unit_decimal(transaction.get("amount")),
             transaction.get("type") or transaction.get("transaction_type"),
             transaction.get("note") or "",
             self._canonical_datetime(
@@ -521,6 +545,19 @@ class SpendeeGateway:
             self._optional_decimal(transaction.get("foreign_amount")),
             self._optional_decimal(transaction.get("foreign_rate")),
         )
+
+    @staticmethod
+    def _resource_aliases(resources: list[dict[str, Any]]) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        for resource in resources:
+            firestore_id = resource.get("id")
+            if not isinstance(firestore_id, str) or not firestore_id:
+                continue
+            aliases[firestore_id] = firestore_id
+            legacy_id = resource.get("legacy_id")
+            if isinstance(legacy_id, int) and not isinstance(legacy_id, bool):
+                aliases[str(legacy_id)] = firestore_id
+        return aliases
 
     def _canonical_datetime(self, value: Any) -> str:
         parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -534,6 +571,10 @@ class SpendeeGateway:
         if value is None:
             return None
         return Decimal(str(value))
+
+    @staticmethod
+    def _minor_unit_decimal(value: Any) -> Decimal:
+        return Decimal(str(value)).quantize(Decimal("0.01"))
 
     @staticmethod
     def _validate_wallet_selection(
