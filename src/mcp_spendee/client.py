@@ -59,6 +59,10 @@ class _ConfiguredSpendee(Spendee):
     def list_firestore_transactions(
         self,
         wallet_id: ResourceId | None = None,
+        *,
+        offset: int = 0,
+        limit: int | None = 100,
+        include_labels: bool = True,
     ) -> list[dict[str, Any]]:
         """Return current transactions from Firestore for modern UUID wallets."""
 
@@ -82,10 +86,29 @@ class _ConfiguredSpendee(Spendee):
             if not isinstance(firestore_wallet_id, str) or public_wallet_id is None:
                 continue
             path = f"users/{self.firestore_user_id}/wallets/{firestore_wallet_id}/transactions"
-            for transaction in self._firestore_collection(path):
+            stored_transactions = self._firestore_collection(path)
+            stop = None if limit is None else offset + limit
+            selected_transactions = stored_transactions[offset:stop]
+            label_names = (
+                {label["id"]: label["name"] for label in self.list_labels()}
+                if include_labels
+                else {}
+            )
+            for transaction in selected_transactions:
                 custom_currency = transaction.get("customCurrencyValue") or {}
                 amount = Decimal(str(transaction.get("amount", "0")))
                 transaction_id = transaction["_id"]
+                labels: list[str] = []
+                if include_labels:
+                    label_ids = self.get_transaction_labels(
+                        firestore_wallet_id,
+                        transaction_id,
+                        resolve_names=False,
+                    )
+                    labels = sorted(
+                        [label_names.get(label_id, label_id) for label_id in label_ids],
+                        key=str.casefold,
+                    )
                 transactions.append(
                     {
                         "id": transaction_id,
@@ -98,10 +121,7 @@ class _ConfiguredSpendee(Spendee):
                         "amount": float(amount),
                         "start_date": transaction.get("madeAt"),
                         "note": transaction.get("note"),
-                        "labels": self.get_transaction_labels(
-                            firestore_wallet_id,
-                            transaction_id,
-                        ),
+                        "labels": labels,
                         "hashtags": [],
                         "foreign_currency": custom_currency.get("currency"),
                         "foreign_amount": (
@@ -253,13 +273,20 @@ class SpendeeGateway:
         wallet_id: ResourceId | None = None,
         offset: int = 0,
         limit: int = 100,
+        include_labels: bool = False,
     ) -> list[dict[str, Any]]:
         if offset < 0:
             raise ValueError("offset must be non-negative")
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
 
-        transactions = self._call("list_firestore_transactions", wallet_id)
+        transactions = self._call(
+            "list_firestore_transactions",
+            wallet_id,
+            offset=offset,
+            limit=limit,
+            include_labels=include_labels,
+        )
 
         fields = (
             "id",
@@ -278,7 +305,7 @@ class SpendeeGateway:
             "status",
             "firestore_wallet_id",
         )
-        return [_pick(transaction, fields) for transaction in transactions[offset : offset + limit]]
+        return [_pick(transaction, fields) for transaction in transactions]
 
     def create_transaction(
         self,
@@ -509,7 +536,13 @@ class SpendeeGateway:
             wallet_aliases=wallet_aliases,
             category_aliases=category_aliases,
         )
-        transactions = self._call("list_firestore_transactions", preview["wallet_id"])
+        transactions = self._call(
+            "list_firestore_transactions",
+            preview["wallet_id"],
+            offset=0,
+            limit=None,
+            include_labels=False,
+        )
         for transaction in transactions:
             try:
                 matches = (

@@ -64,14 +64,16 @@ async def list_transactions(
     wallet_id: ResourceId | None = None,
     offset: int = 0,
     limit: int = 100,
+    include_labels: bool = False,
 ) -> list[dict[str, Any]]:
-    """List transactions, optionally filtered by wallet."""
+    """List transactions, optionally filtered by wallet and including labels."""
     return await anyio.to_thread.run_sync(
         partial(
             _gateway.list_transactions,
             wallet_id=wallet_id,
             offset=offset,
             limit=limit,
+            include_labels=include_labels,
         )
     )
 

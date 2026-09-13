@@ -18,7 +18,7 @@ class FakeSpendee:
         self.firestore_wallet_calls = 0
         self.legacy_category_calls = 0
         self.firestore_category_calls = 0
-        self.firestore_transaction_calls: list[int | str | None] = []
+        self.firestore_transaction_calls: list[dict[str, Any]] = []
         self.label_updates: list[dict[str, Any]] = []
 
     def wallet_get_all(self) -> list[dict[str, Any]]:
@@ -128,8 +128,19 @@ class FakeSpendee:
     def list_firestore_transactions(
         self,
         wallet_id: int | str | None = None,
+        *,
+        offset: int = 0,
+        limit: int | None = 100,
+        include_labels: bool = True,
     ) -> list[dict[str, Any]]:
-        self.firestore_transaction_calls.append(wallet_id)
+        self.firestore_transaction_calls.append(
+            {
+                "wallet_id": wallet_id,
+                "offset": offset,
+                "limit": limit,
+                "include_labels": include_labels,
+            }
+        )
         transactions = [
             {
                 "id": 30,
@@ -184,8 +195,11 @@ class FakeSpendee:
                 }
             )
         if wallet_id is None:
-            return transactions
-        return [item for item in transactions if item["wallet_id"] == wallet_id]
+            selected = transactions
+        else:
+            selected = [item for item in transactions if item["wallet_id"] == wallet_id]
+        stop = None if limit is None else offset + limit
+        return selected[offset:stop]
 
     def get_currency_exchange_rate(
         self,
@@ -445,6 +459,15 @@ def test_list_transactions_filters_by_wallet(gateway: SpendeeGateway) -> None:
 
     assert [transaction["id"] for transaction in transactions] == [30]
     assert transactions[0]["foreign_rate"] == 0.02
+    api = gateway._get_api()
+    assert api.firestore_transaction_calls == [
+        {
+            "wallet_id": 10,
+            "offset": 0,
+            "limit": 100,
+            "include_labels": False,
+        }
+    ]
 
 
 def test_list_transactions_accepts_firestore_only_wallet_id(
@@ -453,6 +476,52 @@ def test_list_transactions_accepts_firestore_only_wallet_id(
     transactions = gateway.list_transactions(wallet_id="general-wallet-uuid")
 
     assert [transaction["id"] for transaction in transactions] == ["existing-transaction-uuid"]
+
+
+def test_firestore_transaction_listing_limits_rows_before_loading_labels() -> None:
+    class TransactionListingSpendee(_ConfiguredSpendee):
+        def __init__(self) -> None:
+            self.relation_calls = 0
+            self.label_calls = 0
+
+        @property
+        def firestore_user_id(self) -> str:
+            return "user"
+
+        def list_firestore_wallets(self) -> list[dict[str, Any]]:
+            return [{"id": "general", "legacy_id": None}]
+
+        def list_firestore_categories(self) -> list[dict[str, Any]]:
+            return [{"id": "shopping", "legacy_id": None}]
+
+        def list_labels(self) -> list[dict[str, str]]:
+            self.label_calls += 1
+            return [{"id": "family", "name": "семейное"}]
+
+        def _firestore_collection(self, path: str) -> list[dict[str, Any]]:
+            if path.endswith("/transactions"):
+                return [
+                    {
+                        "_id": f"transaction-{index}",
+                        "amount": "-100",
+                        "category": "shopping",
+                        "madeAt": "2026-09-13T12:00:00Z",
+                        "note": f"Transaction {index}",
+                    }
+                    for index in range(529)
+                ]
+            if path.endswith("/transactionLabels"):
+                self.relation_calls += 1
+                return [{"label": "family"}]
+            raise AssertionError(f"Unexpected Firestore path: {path}")
+
+    api = TransactionListingSpendee()
+
+    transactions = api.list_firestore_transactions("general")
+
+    assert len(transactions) == 100
+    assert api.relation_calls == 100
+    assert api.label_calls == 1
 
 
 def test_create_transaction_requires_preview_then_confirmation(
