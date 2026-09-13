@@ -42,6 +42,7 @@ async def test_server_exposes_expected_tools(client_session: ClientSession) -> N
         "travel_rule",
         "ordinary_default",
         "income_rule",
+        "currency_date_rule",
     ]
 
 

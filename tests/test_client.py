@@ -55,6 +55,14 @@ class FakeSpendee:
                 "type": "cash",
                 "status": "active",
             },
+            {
+                "id": "uk-wallet-uuid",
+                "legacy_id": None,
+                "name": "UK 2026",
+                "currency": "RUB",
+                "type": "cash",
+                "status": "active",
+            },
         ]
 
     def get_all_user_categories(self) -> list[dict[str, Any]]:
@@ -306,6 +314,15 @@ def test_list_wallets_returns_safe_subset(gateway: SpendeeGateway) -> None:
         {
             "id": "general-wallet-uuid",
             "name": "Общий",
+            "balance": None,
+            "currency": "RUB",
+            "type": "cash",
+            "status": "active",
+            "is_my": None,
+        },
+        {
+            "id": "uk-wallet-uuid",
+            "name": "UK 2026",
             "balance": None,
             "currency": "RUB",
             "type": "cash",
@@ -769,6 +786,56 @@ def test_create_transaction_rejects_operational_wallet_for_income_rule() -> None
             amount=1000,
             transaction_type="income",
         )
+
+
+@pytest.mark.parametrize(
+    ("wallet_id", "currency", "occurred_at", "transaction_type"),
+    [
+        (10, "GBP", "2026-09-20T12:00:00+03:00", "expense"),
+        ("uk-wallet-uuid", "EUR", "2026-09-20T12:00:00+03:00", "expense"),
+        ("uk-wallet-uuid", "GBP", "2026-09-11T12:00:00+03:00", "expense"),
+        ("uk-wallet-uuid", "GBP", "2026-09-28T12:00:00+03:00", "expense"),
+        ("uk-wallet-uuid", "GBP", "2026-09-20T12:00:00+03:00", "income"),
+    ],
+)
+def test_currency_date_rule_rejects_transactions_outside_uk_trip(
+    gateway: SpendeeGateway,
+    wallet_id: int | str,
+    currency: str,
+    occurred_at: str,
+    transaction_type: str,
+) -> None:
+    with pytest.raises(ValueError, match="currency_date_rule"):
+        gateway.create_transaction(
+            wallet_id=wallet_id,
+            wallet_selection_reason="currency_date_rule",
+            category_id=20,
+            amount=10,
+            currency=currency,
+            occurred_at=occurred_at,
+            transaction_type=transaction_type,
+        )
+
+
+def test_currency_date_rule_accepts_inclusive_uk_trip_boundaries(
+    gateway: SpendeeGateway,
+) -> None:
+    for occurred_at in (
+        "2026-09-12T00:00:00+03:00",
+        "2026-09-27T23:59:59+03:00",
+    ):
+        preview = gateway.create_transaction(
+            wallet_id="uk-wallet-uuid",
+            wallet_selection_reason="currency_date_rule",
+            category_id=20,
+            amount=10,
+            currency="GBP",
+            exchange_rate=100,
+            occurred_at=occurred_at,
+            transaction_type="expense",
+        )
+
+        assert preview["status"] == "preview"
 
 
 def test_create_transaction_preview_includes_wallet_name_and_selection_reason() -> None:
