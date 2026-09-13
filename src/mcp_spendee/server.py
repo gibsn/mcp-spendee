@@ -53,7 +53,7 @@ def list_categories(
 
 @mcp.tool()
 def list_transactions(
-    wallet_id: int | None = None,
+    wallet_id: ResourceId | None = None,
     offset: int = 0,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
@@ -73,6 +73,7 @@ def create_transaction(
     occurred_at: str | None = None,
     currency: str | None = None,
     exchange_rate: float | None = None,
+    allow_duplicate: bool = False,
     confirm: bool = False,
     request_id: str | None = None,
 ) -> dict[str, Any]:
@@ -88,7 +89,10 @@ def create_transaction(
     selected wallet's currency. For a different currency, preview without an
     exchange_rate first, then confirm with the returned foreign_rate as
     exchange_rate. First call with confirm=false; create only after checking
-    the preview, then pass confirm=true and a unique request_id.
+    the preview, then pass confirm=true and a unique request_id. Exact content
+    is deduplicated against Firestore unless allow_duplicate=true; use that
+    override only after the user confirms two genuinely separate identical
+    operations.
     """
     return _gateway.create_transaction(
         wallet_id=wallet_id,
@@ -101,6 +105,7 @@ def create_transaction(
         occurred_at=occurred_at,
         currency=currency,
         exchange_rate=exchange_rate,
+        allow_duplicate=allow_duplicate,
         confirm=confirm,
         request_id=request_id,
     )

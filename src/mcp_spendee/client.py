@@ -55,6 +55,71 @@ class _ConfiguredSpendee(Spendee):
         refresh_token = self._get_refresh_token(self._email, self._password)
         self._access_token = self._get_access_token(refresh_token)
 
+    def list_firestore_transactions(
+        self,
+        wallet_id: ResourceId | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return current transactions from Firestore for modern UUID wallets."""
+
+        wallets = self.list_firestore_wallets()
+        if wallet_id is not None:
+            wallets = [
+                wallet
+                for wallet in wallets
+                if wallet.get("id") == wallet_id or wallet.get("legacy_id") == wallet_id
+            ]
+        categories = self.list_firestore_categories()
+        category_ids = {
+            str(category["id"]): _public_id(category)
+            for category in categories
+            if category.get("id") and _public_id(category) is not None
+        }
+        transactions: list[dict[str, Any]] = []
+        for wallet in wallets:
+            firestore_wallet_id = wallet.get("id")
+            public_wallet_id = _public_id(wallet)
+            if not isinstance(firestore_wallet_id, str) or public_wallet_id is None:
+                continue
+            path = f"users/{self.firestore_user_id}/wallets/{firestore_wallet_id}/transactions"
+            for transaction in self._firestore_collection(path):
+                custom_currency = transaction.get("customCurrencyValue") or {}
+                amount = Decimal(str(transaction.get("amount", "0")))
+                transaction_id = transaction["_id"]
+                transactions.append(
+                    {
+                        "id": transaction_id,
+                        "uuid": transaction_id,
+                        "wallet_id": public_wallet_id,
+                        "category_id": category_ids.get(
+                            str(transaction.get("category")),
+                            transaction.get("category"),
+                        ),
+                        "amount": float(amount),
+                        "start_date": transaction.get("madeAt"),
+                        "note": transaction.get("note"),
+                        "labels": self.get_transaction_labels(
+                            firestore_wallet_id,
+                            transaction_id,
+                        ),
+                        "hashtags": [],
+                        "foreign_currency": custom_currency.get("currency"),
+                        "foreign_amount": (
+                            float(Decimal(str(custom_currency["amount"])))
+                            if custom_currency.get("amount") is not None
+                            else None
+                        ),
+                        "foreign_rate": (
+                            float(Decimal(str(custom_currency["exchangeRate"])))
+                            if custom_currency.get("exchangeRate") is not None
+                            else None
+                        ),
+                        "type": "expense" if amount < 0 else "income",
+                        "status": transaction.get("status") or "active",
+                        "firestore_wallet_id": firestore_wallet_id,
+                    }
+                )
+        return transactions
+
 
 def _pick(item: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: item.get(field) for field in fields}
@@ -184,7 +249,7 @@ class SpendeeGateway:
     def list_transactions(
         self,
         *,
-        wallet_id: int | None = None,
+        wallet_id: ResourceId | None = None,
         offset: int = 0,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
@@ -193,9 +258,7 @@ class SpendeeGateway:
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
 
-        transactions = self._call("wallet_get_transactions", offset=offset, limit=limit)
-        if isinstance(transactions, dict):
-            transactions = transactions.get("transactions", [])
+        transactions = self._call("list_firestore_transactions", wallet_id)
 
         fields = (
             "id",
@@ -205,18 +268,16 @@ class SpendeeGateway:
             "amount",
             "start_date",
             "note",
+            "labels",
             "hashtags",
             "foreign_currency",
             "foreign_amount",
             "foreign_rate",
             "type",
             "status",
+            "firestore_wallet_id",
         )
-        return [
-            _pick(transaction, fields)
-            for transaction in transactions
-            if wallet_id is None or transaction.get("wallet_id") == wallet_id
-        ]
+        return [_pick(transaction, fields) for transaction in transactions[offset : offset + limit]]
 
     def create_transaction(
         self,
@@ -231,6 +292,7 @@ class SpendeeGateway:
         occurred_at: str | None = None,
         currency: str | None = None,
         exchange_rate: float | None = None,
+        allow_duplicate: bool = False,
         confirm: bool = False,
         request_id: str | None = None,
     ) -> dict[str, Any]:
@@ -345,6 +407,36 @@ class SpendeeGateway:
                     "deduplicated": True,
                 }
 
+            existing = None if allow_duplicate else self._find_exact_transaction(preview)
+            if existing is not None:
+                labels_applied = True
+                label_result = None
+                if normalized_labels and set(existing.get("labels") or []) != set(
+                    normalized_labels
+                ):
+                    label_result = self._call(
+                        "set_transaction_labels",
+                        existing["firestore_wallet_id"],
+                        existing["uuid"],
+                        normalized_labels,
+                    )
+                result = {
+                    "status": "existing",
+                    "created": False,
+                    "deduplicated": True,
+                    "request_id": normalized_request_id,
+                    "transaction": preview,
+                    "spendee_response": {
+                        "uuid": existing["uuid"],
+                        "firestore_wallet_id": existing["firestore_wallet_id"],
+                    },
+                    "labels_applied": labels_applied,
+                }
+                if label_result is not None:
+                    result["label_result"] = label_result
+                self._write_results[normalized_request_id] = result
+                return result
+
             try:
                 timezone = ZoneInfo(self._settings.timezone)
                 aware_start_date = start_date.replace(tzinfo=timezone)
@@ -401,6 +493,47 @@ class SpendeeGateway:
                 result["label_result"] = response.get("firestore_labels")
             self._write_results[normalized_request_id] = result
             return result
+
+    def _find_exact_transaction(self, preview: dict[str, Any]) -> dict[str, Any] | None:
+        transactions = self._call("list_firestore_transactions", preview["wallet_id"])
+        for transaction in transactions:
+            try:
+                matches = self._transaction_signature(transaction) == self._transaction_signature(
+                    preview
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if matches:
+                return transaction
+        return None
+
+    def _transaction_signature(self, transaction: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            str(transaction.get("wallet_id")),
+            str(transaction.get("category_id")),
+            Decimal(str(transaction.get("amount"))),
+            transaction.get("type") or transaction.get("transaction_type"),
+            transaction.get("note") or "",
+            self._canonical_datetime(
+                transaction.get("start_date") or transaction.get("occurred_at")
+            ),
+            transaction.get("foreign_currency"),
+            self._optional_decimal(transaction.get("foreign_amount")),
+            self._optional_decimal(transaction.get("foreign_rate")),
+        )
+
+    def _canonical_datetime(self, value: Any) -> str:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        timezone = ZoneInfo(self._settings.timezone)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone).replace(tzinfo=None)
+        return parsed.isoformat(timespec="seconds")
+
+    @staticmethod
+    def _optional_decimal(value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return Decimal(str(value))
 
     @staticmethod
     def _validate_wallet_selection(

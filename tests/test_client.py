@@ -18,6 +18,8 @@ class FakeSpendee:
         self.firestore_wallet_calls = 0
         self.legacy_category_calls = 0
         self.firestore_category_calls = 0
+        self.firestore_transaction_calls: list[int | str | None] = []
+        self.label_updates: list[dict[str, Any]] = []
 
     def wallet_get_all(self) -> list[dict[str, Any]]:
         self.legacy_wallet_calls += 1
@@ -115,6 +117,68 @@ class FakeSpendee:
             {"id": 31, "wallet_id": 11, "category_id": 21, "amount": 1000},
         ]
 
+    def list_firestore_transactions(
+        self,
+        wallet_id: int | str | None = None,
+    ) -> list[dict[str, Any]]:
+        self.firestore_transaction_calls.append(wallet_id)
+        transactions = [
+            {
+                "id": 30,
+                "uuid": "legacy-wallet-transaction-uuid",
+                "wallet_id": 10,
+                "category_id": 20,
+                "amount": -12.5,
+                "start_date": "2026-07-21T09:00:00Z",
+                "note": "Lunch",
+                "labels": [],
+                "foreign_currency": "THB",
+                "foreign_amount": "-625",
+                "foreign_rate": 0.02,
+                "type": "expense",
+                "status": "active",
+                "firestore_wallet_id": "wallet-uuid",
+            },
+            {
+                "id": "existing-transaction-uuid",
+                "uuid": "existing-transaction-uuid",
+                "wallet_id": "general-wallet-uuid",
+                "category_id": "salary-uuid",
+                "amount": 1000.0,
+                "start_date": "2026-07-22T09:00:00Z",
+                "note": "Existing income",
+                "labels": [],
+                "foreign_currency": None,
+                "foreign_amount": None,
+                "foreign_rate": None,
+                "type": "income",
+                "status": "active",
+                "firestore_wallet_id": "general-wallet-uuid",
+            },
+        ]
+        for index, created in enumerate(self.created):
+            transactions.append(
+                {
+                    "id": f"created-{index}",
+                    "uuid": f"created-{index}",
+                    "wallet_id": created["legacy_wallet_id"],
+                    "category_id": created["legacy_category_id"],
+                    "amount": float(created["amount"]),
+                    "start_date": created["made_at"].isoformat(),
+                    "note": created.get("note"),
+                    "labels": created.get("labels") or [],
+                    "foreign_currency": created.get("foreign_currency"),
+                    "foreign_amount": created.get("foreign_amount"),
+                    "foreign_rate": created.get("foreign_rate"),
+                    "type": "expense" if created["amount"] < 0 else "income",
+                    "status": "active",
+                    "firestore_wallet_id": "wallet-uuid",
+                }
+            )
+        if wallet_id is None:
+            return transactions
+        return [item for item in transactions if item["wallet_id"] == wallet_id]
+
     def get_currency_exchange_rate(
         self,
         source_currency: str,
@@ -147,6 +211,13 @@ class FakeSpendee:
         transaction_uuid: str,
         labels: list[str],
     ) -> dict[str, Any]:
+        self.label_updates.append(
+            {
+                "wallet_id": firestore_wallet_id,
+                "transaction_id": transaction_uuid,
+                "labels": labels,
+            }
+        )
         return {
             "changed": True,
             "labels": labels,
@@ -359,6 +430,14 @@ def test_list_transactions_filters_by_wallet(gateway: SpendeeGateway) -> None:
     assert transactions[0]["foreign_rate"] == 0.02
 
 
+def test_list_transactions_accepts_firestore_only_wallet_id(
+    gateway: SpendeeGateway,
+) -> None:
+    transactions = gateway.list_transactions(wallet_id="general-wallet-uuid")
+
+    assert [transaction["id"] for transaction in transactions] == ["existing-transaction-uuid"]
+
+
 def test_create_transaction_requires_preview_then_confirmation(
     gateway: SpendeeGateway,
     fake_api: FakeSpendee,
@@ -390,6 +469,93 @@ def test_create_transaction_requires_preview_then_confirmation(
     duplicate = gateway.create_transaction(**arguments, confirm=True, request_id="lunch-20260723")
     assert duplicate["deduplicated"] is True
     assert len(fake_api.created) == 1
+
+
+def test_create_transaction_deduplicates_exact_content_across_request_ids(
+    gateway: SpendeeGateway,
+    fake_api: FakeSpendee,
+) -> None:
+    arguments = {
+        "wallet_id": 10,
+        "wallet_selection_reason": "explicit_in_request",
+        "category_id": 20,
+        "amount": 17.22,
+        "currency": "THB",
+        "exchange_rate": 0.02,
+        "transaction_type": "expense",
+        "note": "Uber",
+        "occurred_at": "2026-09-12T12:00:00+03:00",
+        "confirm": True,
+    }
+
+    first = gateway.create_transaction(**arguments, request_id="first-attempt")
+    second = gateway.create_transaction(**arguments, request_id="retry-with-new-id")
+
+    assert first["status"] == "created"
+    assert second["status"] == "existing"
+    assert second["deduplicated"] is True
+    assert len(fake_api.created) == 1
+
+
+def test_duplicate_retry_repairs_labels_instead_of_creating_another_transaction(
+    gateway: SpendeeGateway,
+    fake_api: FakeSpendee,
+) -> None:
+    arguments = {
+        "wallet_id": 10,
+        "wallet_selection_reason": "explicit_in_request",
+        "category_id": 20,
+        "amount": 17.74,
+        "currency": "THB",
+        "exchange_rate": 0.02,
+        "transaction_type": "expense",
+        "note": "Uber",
+        "occurred_at": "2026-09-13T10:41:41+03:00",
+        "confirm": True,
+    }
+    gateway.create_transaction(**arguments, request_id="first-without-label")
+
+    duplicate = gateway.create_transaction(
+        **arguments,
+        labels=["такси"],
+        request_id="retry-with-label",
+    )
+
+    assert duplicate["status"] == "existing"
+    assert len(fake_api.created) == 1
+    assert fake_api.label_updates == [
+        {
+            "wallet_id": "wallet-uuid",
+            "transaction_id": "created-0",
+            "labels": ["такси"],
+        }
+    ]
+
+
+def test_create_transaction_allows_explicit_identical_transaction(
+    gateway: SpendeeGateway,
+    fake_api: FakeSpendee,
+) -> None:
+    arguments = {
+        "wallet_id": 10,
+        "wallet_selection_reason": "explicit_in_request",
+        "category_id": 20,
+        "amount": 5,
+        "transaction_type": "expense",
+        "note": "Two visible identical charges",
+        "occurred_at": "2026-09-13T12:00:00+03:00",
+        "confirm": True,
+    }
+    gateway.create_transaction(**arguments, request_id="first-charge")
+
+    second = gateway.create_transaction(
+        **arguments,
+        request_id="second-charge",
+        allow_duplicate=True,
+    )
+
+    assert second["status"] == "created"
+    assert len(fake_api.created) == 2
 
 
 def test_create_transaction_preserves_foreign_amount_and_rate(

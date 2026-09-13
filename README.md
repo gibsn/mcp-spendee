@@ -31,7 +31,17 @@ only for the `Операционка` wallet and `travel_rule` only for `Общ�
 agent cannot silently route an ordinary unspecified expense to `Общий`.
 Wallet and category IDs are legacy integers when Spendee still provides them;
 newer resources use Firestore UUID strings. Both forms are accepted by
-`list_categories` and `create_transaction`.
+`list_categories`, `list_transactions`, and `create_transaction`.
+
+Before a confirmed write, the server compares the complete normalized
+transaction with current Firestore data: wallet, category, amount, type, note,
+date and foreign-currency fields. An exact match returns `status=existing`
+instead of creating another transaction, even when a retry uses a different
+`request_id` or the server has restarted. If the retry adds labels, the server
+applies them to the existing transaction.
+When two source operations genuinely have identical fields, the caller can set
+`allow_duplicate=true` only after the user explicitly confirms that both are
+separate charges.
 
 The forked `spendee` library owns both the modern Firestore transaction and
 label writes. If label attachment fails after transaction creation, a
@@ -107,8 +117,8 @@ make test
 - Status output never includes credentials.
 - Transaction amounts must be positive; `transaction_type` determines the sign.
 - Writes require both `confirm=true` and a non-empty `request_id`.
-- The in-memory request cache prevents retries from duplicating a transaction
-  only while the same server process remains running.
+- The request cache handles immediate retries, and the Firestore content check
+  prevents exact duplicates across request IDs and server restarts.
 
 ## License
 
