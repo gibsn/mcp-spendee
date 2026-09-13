@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 
 from mcp_spendee.client import (
@@ -31,38 +33,51 @@ def spendee_status() -> dict[str, object]:
 
 
 @mcp.tool()
-def list_wallets() -> list[dict[str, Any]]:
+async def list_wallets() -> list[dict[str, Any]]:
     """List Spendee wallets with Firestore-compatible IDs and currencies."""
-    return _gateway.list_wallets()
+    return await anyio.to_thread.run_sync(_gateway.list_wallets)
 
 
 @mcp.tool()
-def list_labels() -> list[dict[str, str]]:
+async def list_labels() -> list[dict[str, str]]:
     """List modern Spendee labels from Firestore."""
-    return _gateway.list_labels()
+    return await anyio.to_thread.run_sync(_gateway.list_labels)
 
 
 @mcp.tool()
-def list_categories(
+async def list_categories(
     wallet_id: ResourceId | None = None,
     category_type: TransactionType | None = None,
 ) -> list[dict[str, Any]]:
     """List Spendee categories, optionally filtered by wallet and expense/income type."""
-    return _gateway.list_categories(wallet_id=wallet_id, category_type=category_type)
+    return await anyio.to_thread.run_sync(
+        partial(
+            _gateway.list_categories,
+            wallet_id=wallet_id,
+            category_type=category_type,
+        )
+    )
 
 
 @mcp.tool()
-def list_transactions(
+async def list_transactions(
     wallet_id: ResourceId | None = None,
     offset: int = 0,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """List transactions, optionally filtered by wallet."""
-    return _gateway.list_transactions(wallet_id=wallet_id, offset=offset, limit=limit)
+    return await anyio.to_thread.run_sync(
+        partial(
+            _gateway.list_transactions,
+            wallet_id=wallet_id,
+            offset=offset,
+            limit=limit,
+        )
+    )
 
 
 @mcp.tool()
-def create_transaction(
+async def create_transaction(
     wallet_id: ResourceId,
     wallet_selection_reason: WalletSelectionReason,
     category_id: ResourceId,
@@ -96,20 +111,23 @@ def create_transaction(
     override only after the user confirms two genuinely separate identical
     operations.
     """
-    return _gateway.create_transaction(
-        wallet_id=wallet_id,
-        wallet_selection_reason=wallet_selection_reason,
-        category_id=category_id,
-        amount=amount,
-        transaction_type=transaction_type,
-        note=note,
-        labels=labels,
-        occurred_at=occurred_at,
-        currency=currency,
-        exchange_rate=exchange_rate,
-        allow_duplicate=allow_duplicate,
-        confirm=confirm,
-        request_id=request_id,
+    return await anyio.to_thread.run_sync(
+        partial(
+            _gateway.create_transaction,
+            wallet_id=wallet_id,
+            wallet_selection_reason=wallet_selection_reason,
+            category_id=category_id,
+            amount=amount,
+            transaction_type=transaction_type,
+            note=note,
+            labels=labels,
+            occurred_at=occurred_at,
+            currency=currency,
+            exchange_rate=exchange_rate,
+            allow_duplicate=allow_duplicate,
+            confirm=confirm,
+            request_id=request_id,
+        )
     )
 
 
