@@ -25,10 +25,8 @@ Creating a transaction is deliberately two-step. Call `create_transaction` once
 with `confirm=false` to inspect the normalized payload, then repeat it with
 `confirm=true` and a unique `request_id`. Reusing a request ID in the same
 server process returns the cached result instead of creating a duplicate.
-Every call must also state `wallet_selection_reason`: `explicit_in_request`,
-`travel_rule`, or `ordinary_default`. The server accepts `ordinary_default`
-only for the `Операционка` wallet and `travel_rule` only for `Общий`, so an
-agent cannot silently route an ordinary unspecified expense to `Общий`.
+Wallet routing is a client responsibility; the server does not encode personal
+rules for wallet names, transaction purposes, currencies, or dates.
 Wallet and category IDs are legacy integers when Spendee still provides them;
 newer resources use Firestore UUID strings. Both forms are accepted by
 `list_categories`, `list_transactions`, and `create_transaction`.

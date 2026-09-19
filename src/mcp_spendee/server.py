@@ -10,7 +10,6 @@ from mcp_spendee.client import (
     ResourceId,
     SpendeeGateway,
     TransactionType,
-    WalletSelectionReason,
 )
 from mcp_spendee.config import Settings
 
@@ -81,7 +80,6 @@ async def list_transactions(
 @mcp.tool()
 async def create_transaction(
     wallet_id: ResourceId,
-    wallet_selection_reason: WalletSelectionReason,
     category_id: ResourceId,
     amount: float,
     transaction_type: TransactionType,
@@ -96,14 +94,7 @@ async def create_transaction(
 ) -> dict[str, Any]:
     """Preview or create a transaction.
 
-    Amount must always be positive. wallet_selection_reason records why the
-    wallet was selected: explicit_in_request for a wallet named by the user,
-    travel_rule for the configured travel exception, ordinary_default when
-    no wallet was specified for an expense, income_rule for the configured
-    income destination, or currency_date_rule for a configured currency/date
-    exception. ordinary_default is accepted only for Операционка,
-    travel_rule and income_rule only for Общий, and currency_date_rule only for
-    the configured currency/date wallet. transaction_type controls whether Spendee
+    Amount must always be positive. transaction_type controls whether Spendee
     receives a negative expense or positive income. currency defaults to the
     selected wallet's currency. For a different currency, preview without an
     exchange_rate first, then confirm with the returned foreign_rate as
@@ -117,7 +108,6 @@ async def create_transaction(
         partial(
             _gateway.create_transaction,
             wallet_id=wallet_id,
-            wallet_selection_reason=wallet_selection_reason,
             category_id=category_id,
             amount=amount,
             transaction_type=transaction_type,

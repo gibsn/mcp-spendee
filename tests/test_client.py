@@ -436,7 +436,6 @@ def test_create_transaction_accepts_firestore_only_ids(
 ) -> None:
     arguments = {
         "wallet_id": "general-wallet-uuid",
-        "wallet_selection_reason": "income_rule",
         "category_id": "music-category-uuid",
         "amount": 1000,
         "transaction_type": "income",
@@ -452,6 +451,24 @@ def test_create_transaction_accepts_firestore_only_ids(
     )
     assert fake_api.created[0]["legacy_wallet_id"] == "general-wallet-uuid"
     assert fake_api.created[0]["legacy_category_id"] == "music-category-uuid"
+
+
+def test_create_transaction_has_no_wallet_routing_business_rules(
+    gateway: SpendeeGateway,
+) -> None:
+    preview = gateway.create_transaction(
+        wallet_id=10,
+        category_id=20,
+        amount=10,
+        currency="USD",
+        exchange_rate=0.9,
+        occurred_at="2026-10-20T12:00:00+03:00",
+        transaction_type="expense",
+    )
+
+    assert preview["status"] == "preview"
+    assert preview["transaction"]["wallet_name"] == "Cash"
+    assert "wallet_selection_reason" not in preview["transaction"]
 
 
 def test_list_transactions_filters_by_wallet(gateway: SpendeeGateway) -> None:
@@ -530,7 +547,6 @@ def test_create_transaction_requires_preview_then_confirmation(
 ) -> None:
     arguments = {
         "wallet_id": 10,
-        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": 12.5,
         "transaction_type": "expense",
@@ -563,7 +579,6 @@ def test_create_transaction_deduplicates_exact_content_across_request_ids(
 ) -> None:
     arguments = {
         "wallet_id": 10,
-        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": 17.22,
         "currency": "THB",
@@ -589,7 +604,6 @@ def test_duplicate_detection_canonicalizes_category_aliases(
 ) -> None:
     arguments = {
         "wallet_id": 10,
-        "wallet_selection_reason": "explicit_in_request",
         "amount": 12.5,
         "transaction_type": "expense",
         "note": "Lunch",
@@ -618,7 +632,6 @@ def test_duplicate_detection_tolerates_sub_cent_wallet_rounding(
 ) -> None:
     arguments = {
         "wallet_id": 10,
-        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": 17.22,
         "currency": "THB",
@@ -646,7 +659,6 @@ def test_duplicate_retry_repairs_labels_instead_of_creating_another_transaction(
 ) -> None:
     arguments = {
         "wallet_id": 10,
-        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": 17.74,
         "currency": "THB",
@@ -681,7 +693,6 @@ def test_create_transaction_allows_explicit_identical_transaction(
 ) -> None:
     arguments = {
         "wallet_id": 10,
-        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": 5,
         "transaction_type": "expense",
@@ -707,7 +718,6 @@ def test_create_transaction_preserves_foreign_amount_and_rate(
 ) -> None:
     arguments = {
         "wallet_id": 10,
-        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": 1200,
         "currency": "thb",
@@ -722,7 +732,6 @@ def test_create_transaction_preserves_foreign_amount_and_rate(
     assert preview["transaction"] == {
         "wallet_id": 10,
         "wallet_name": "Cash",
-        "wallet_selection_reason": "explicit_in_request",
         "category_id": 20,
         "amount": -24.0,
         "currency": "EUR",
@@ -761,43 +770,13 @@ def test_create_transaction_rejects_invalid_amount(gateway: SpendeeGateway) -> N
     with pytest.raises(ValueError, match="amount must be positive"):
         gateway.create_transaction(
             wallet_id=10,
-            wallet_selection_reason="explicit_in_request",
             category_id=20,
             amount=-1,
             transaction_type="expense",
         )
 
 
-def test_create_transaction_rejects_general_wallet_for_ordinary_default() -> None:
-    class WalletRoutingSpendee(FakeSpendee):
-        def list_firestore_wallets(self) -> list[dict[str, Any]]:
-            return [
-                {
-                    "id": "general-wallet-uuid",
-                    "legacy_id": 7613265,
-                    "name": "Общий",
-                    "currency": "RUB",
-                    "type": "cash",
-                    "status": "active",
-                }
-            ]
-
-    gateway = SpendeeGateway(
-        Settings(email="test@example.com", password="secret"),
-        api_factory=WalletRoutingSpendee,
-    )
-
-    with pytest.raises(ValueError, match="must use the Операционка wallet"):
-        gateway.create_transaction(
-            wallet_id=7613265,
-            wallet_selection_reason="ordinary_default",
-            category_id=20,
-            amount=290,
-            transaction_type="expense",
-        )
-
-
-def test_create_transaction_accepts_income_rule_for_general_wallet() -> None:
+def test_create_transaction_accepts_general_wallet_income() -> None:
     class WalletRoutingSpendee(FakeSpendee):
         def list_firestore_wallets(self) -> list[dict[str, Any]]:
             return [
@@ -818,96 +797,15 @@ def test_create_transaction_accepts_income_rule_for_general_wallet() -> None:
 
     preview = gateway.create_transaction(
         wallet_id=7613265,
-        wallet_selection_reason="income_rule",
         category_id=20,
         amount=1000,
         transaction_type="income",
     )
 
     assert preview["transaction"]["wallet_name"] == "Общий"
-    assert preview["transaction"]["wallet_selection_reason"] == "income_rule"
 
 
-def test_create_transaction_rejects_operational_wallet_for_income_rule() -> None:
-    class WalletRoutingSpendee(FakeSpendee):
-        def list_firestore_wallets(self) -> list[dict[str, Any]]:
-            return [
-                {
-                    "id": "operations-wallet-uuid",
-                    "legacy_id": 2899807,
-                    "name": "Операционка",
-                    "currency": "RUB",
-                    "type": "cash",
-                    "status": "active",
-                }
-            ]
-
-    gateway = SpendeeGateway(
-        Settings(email="test@example.com", password="secret"),
-        api_factory=WalletRoutingSpendee,
-    )
-
-    with pytest.raises(ValueError, match="must use the Общий wallet"):
-        gateway.create_transaction(
-            wallet_id=2899807,
-            wallet_selection_reason="income_rule",
-            category_id=20,
-            amount=1000,
-            transaction_type="income",
-        )
-
-
-@pytest.mark.parametrize(
-    ("wallet_id", "currency", "occurred_at", "transaction_type"),
-    [
-        (10, "GBP", "2026-09-20T12:00:00+03:00", "expense"),
-        ("uk-wallet-uuid", "EUR", "2026-09-20T12:00:00+03:00", "expense"),
-        ("uk-wallet-uuid", "GBP", "2026-09-11T12:00:00+03:00", "expense"),
-        ("uk-wallet-uuid", "GBP", "2026-09-28T12:00:00+03:00", "expense"),
-        ("uk-wallet-uuid", "GBP", "2026-09-20T12:00:00+03:00", "income"),
-    ],
-)
-def test_currency_date_rule_rejects_transactions_outside_uk_trip(
-    gateway: SpendeeGateway,
-    wallet_id: int | str,
-    currency: str,
-    occurred_at: str,
-    transaction_type: str,
-) -> None:
-    with pytest.raises(ValueError, match="currency_date_rule"):
-        gateway.create_transaction(
-            wallet_id=wallet_id,
-            wallet_selection_reason="currency_date_rule",
-            category_id=20,
-            amount=10,
-            currency=currency,
-            occurred_at=occurred_at,
-            transaction_type=transaction_type,
-        )
-
-
-def test_currency_date_rule_accepts_inclusive_uk_trip_boundaries(
-    gateway: SpendeeGateway,
-) -> None:
-    for occurred_at in (
-        "2026-09-12T00:00:00+03:00",
-        "2026-09-27T23:59:59+03:00",
-    ):
-        preview = gateway.create_transaction(
-            wallet_id="uk-wallet-uuid",
-            wallet_selection_reason="currency_date_rule",
-            category_id=20,
-            amount=10,
-            currency="GBP",
-            exchange_rate=100,
-            occurred_at=occurred_at,
-            transaction_type="expense",
-        )
-
-        assert preview["status"] == "preview"
-
-
-def test_create_transaction_preview_includes_wallet_name_and_selection_reason() -> None:
+def test_create_transaction_preview_includes_wallet_name() -> None:
     class WalletRoutingSpendee(FakeSpendee):
         def list_firestore_wallets(self) -> list[dict[str, Any]]:
             return [
@@ -928,11 +826,9 @@ def test_create_transaction_preview_includes_wallet_name_and_selection_reason() 
 
     preview = gateway.create_transaction(
         wallet_id=2899807,
-        wallet_selection_reason="ordinary_default",
         category_id=20,
         amount=290,
         transaction_type="expense",
     )
 
     assert preview["transaction"]["wallet_name"] == "Операционка"
-    assert preview["transaction"]["wallet_selection_reason"] == "ordinary_default"

@@ -14,13 +14,6 @@ from mcp_spendee.config import Settings
 
 TransactionType = Literal["expense", "income"]
 ResourceId = int | str
-WalletSelectionReason = Literal[
-    "explicit_in_request",
-    "travel_rule",
-    "ordinary_default",
-    "income_rule",
-    "currency_date_rule",
-]
 
 
 class SpendeeClientError(RuntimeError):
@@ -311,7 +304,6 @@ class SpendeeGateway:
         self,
         *,
         wallet_id: ResourceId,
-        wallet_selection_reason: WalletSelectionReason,
         category_id: ResourceId,
         amount: float,
         transaction_type: TransactionType,
@@ -336,13 +328,6 @@ class SpendeeGateway:
         if not transaction_currency:
             raise ValueError("currency must not be empty")
         start_date = self._parse_datetime(occurred_at)
-        self._validate_wallet_selection(
-            wallet_name,
-            wallet_selection_reason,
-            transaction_type=transaction_type,
-            transaction_currency=transaction_currency,
-            occurred_at=start_date,
-        )
 
         try:
             input_amount = Decimal(str(amount))
@@ -396,7 +381,6 @@ class SpendeeGateway:
         preview = {
             "wallet_id": wallet_id,
             "wallet_name": wallet_name,
-            "wallet_selection_reason": wallet_selection_reason,
             "category_id": category_id,
             "amount": float(signed_amount),
             "currency": wallet_currency,
@@ -615,35 +599,6 @@ class SpendeeGateway:
     @staticmethod
     def _minor_unit_decimal(value: Any) -> Decimal:
         return Decimal(str(value)).quantize(Decimal("0.01"))
-
-    @staticmethod
-    def _validate_wallet_selection(
-        wallet_name: str,
-        wallet_selection_reason: WalletSelectionReason,
-        *,
-        transaction_type: TransactionType,
-        transaction_currency: str,
-        occurred_at: dt.datetime,
-    ) -> None:
-        normalized_name = wallet_name.casefold()
-        if wallet_selection_reason == "ordinary_default" and normalized_name != "операционка":
-            raise ValueError("ordinary_default transactions must use the Операционка wallet")
-        if wallet_selection_reason == "travel_rule" and normalized_name != "общий":
-            raise ValueError("travel_rule transactions must use the Общий wallet")
-        if wallet_selection_reason == "income_rule" and normalized_name != "общий":
-            raise ValueError("income_rule transactions must use the Общий wallet")
-        if wallet_selection_reason == "currency_date_rule":
-            valid_date = dt.date(2026, 9, 12) <= occurred_at.date() <= dt.date(2026, 9, 27)
-            if (
-                normalized_name != "uk 2026"
-                or transaction_type != "expense"
-                or transaction_currency != "GBP"
-                or not valid_date
-            ):
-                raise ValueError(
-                    "currency_date_rule requires a GBP expense in the UK 2026 wallet "
-                    "dated from 2026-09-12 through 2026-09-27"
-                )
 
     def _resolve_wallet(self, wallet_id: ResourceId) -> dict[str, Any]:
         matches = [wallet for wallet in self.list_wallets() if wallet.get("id") == wallet_id]
