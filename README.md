@@ -105,10 +105,11 @@ A proxy timeout that does not send an MCP cancellation cannot be detected as a
 cancellation by this server; correlate its `tool_start` / `tool_end` events with
 the client's timeout timestamp and proxy logs.
 
-For the shared systemd pool on aitools:
+For the shared systemd pool on aitools, read the system journal (the unprivileged
+user journal may show only older entries):
 
 ```bash
-journalctl --user -u codex-mcp-pool.service --since '10 minutes ago' -o cat
+sudo journalctl _SYSTEMD_USER_UNIT=codex-mcp-pool.service --since '10 minutes ago' -o cat
 ```
 
 ## Installation
