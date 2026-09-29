@@ -52,6 +52,65 @@ both the wallet amount and the original amount. Repeat the confirmed call with
 the preview's `foreign_rate` in `exchange_rate`; this pins the exact conversion
 that was reviewed instead of silently fetching a newer rate.
 
+## Transaction history and dates
+
+`list_transactions` filters on Firestore's `madeAt` timestamp before downloading
+rows, using a [structured query](https://firebase.google.com/docs/firestore/reference/rest/v1/StructuredQuery).
+Results are newest first within each wallet. `limit` (default 100, maximum 1000)
+and `offset` apply per wallet; omit `wallet_id` to query each wallet separately.
+
+- `date_from` / `date_to` as `YYYY-MM-DD` include the entire UTC calendar days.
+- Timestamps must include `Z` or a UTC offset; the start is inclusive and the
+  end exclusive. Naive timestamps are rejected, not interpreted in Moscow time.
+- `limit=null` requires both date bounds and returns the complete period.
+  Internal pages use a cursor and a fixed read snapshot. A failed page fails the
+  whole call, never returning an apparently complete partial result.
+
+For a duplicate precheck of a September 29 operation with an unknown source
+zone, use its calendar date with a one-day margin on both sides:
+
+```json
+{
+  "wallet_id": "<wallet ID from list_wallets>",
+  "date_from": "2026-09-28",
+  "date_to": "2026-09-30",
+  "limit": null,
+  "include_labels": false
+}
+```
+
+The confirmed write also checks **all** transactions in a date window around
+its normalized instant, without a row limit. The exact-match signature remains
+unchanged; expanding a search window never changes the transaction timestamp.
+`occurred_at` accepts explicit UTC offsets. Naive creation timestamps retain the
+existing `SPENDEE_TIMEZONE` fallback, so callers should supply an offset when the
+source timezone is known.
+
+## Diagnostics
+
+The server emits JSON events to stderr with a shared `call_id` and the MCP
+protocol request ID. Events cover tool duration, worker queue and lock wait,
+authentication and auth retries, HTTP endpoint category/status/duration/timeouts,
+query bounds, page/document counts, and transaction result status. Wallets are
+hashed. Credentials, tokens, HTTP bodies, URL query strings, transaction amounts,
+notes and labels are not included in these diagnostic events.
+
+Firebase authentication has a 10-second connection / 30-second read timeout;
+Firestore retains its 30-second timeout. These are network timeouts, not a total
+MCP call deadline. On client cancellation the server logs `tool_cancelled` and
+eventually `worker_finished` with `after_cancel=true` if the worker was running.
+The worker stops before starting further network requests; an in-flight write
+can still complete, so retry an uncertain write only with the same `request_id`.
+A proxy timeout that does not send an MCP cancellation cannot be detected as a
+cancellation by this server; correlate its `tool_start` / `tool_end` events with
+the client's timeout timestamp and proxy logs.
+
+For the shared systemd pool on aitools:
+
+```bash
+journalctl --user -u codex-mcp-pool.service --since '10 minutes ago' -o cat
+```
+
 ## Installation
 
 Install [uv](https://docs.astral.sh/uv/), clone the repository, then run:

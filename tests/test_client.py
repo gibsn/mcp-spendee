@@ -132,6 +132,8 @@ class FakeSpendee:
         offset: int = 0,
         limit: int | None = 100,
         include_labels: bool = True,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[dict[str, Any]]:
         self.firestore_transaction_calls.append(
             {
@@ -198,6 +200,21 @@ class FakeSpendee:
             selected = transactions
         else:
             selected = [item for item in transactions if item["wallet_id"] == wallet_id]
+        import datetime as dt
+
+        if date_from:
+            selected = [
+                t
+                for t in selected
+                if dt.datetime.fromisoformat(t["start_date"])
+                >= dt.datetime.fromisoformat(date_from)
+            ]
+        if date_to:
+            selected = [
+                t
+                for t in selected
+                if dt.datetime.fromisoformat(t["start_date"]) < dt.datetime.fromisoformat(date_to)
+            ]
         stop = None if limit is None else offset + limit
         return selected[offset:stop]
 
@@ -515,18 +532,19 @@ def test_firestore_transaction_listing_limits_rows_before_loading_labels() -> No
             self.label_calls += 1
             return [{"id": "family", "name": "семейное"}]
 
+        def _query_transactions(self, path: str, **kwargs: Any) -> list[dict[str, Any]]:
+            return [
+                {
+                    "_id": f"transaction-{index}",
+                    "amount": "-100",
+                    "category": "shopping",
+                    "madeAt": "2026-09-13T12:00:00Z",
+                    "note": f"Transaction {index}",
+                }
+                for index in range(kwargs["limit"])
+            ]
+
         def _firestore_collection(self, path: str) -> list[dict[str, Any]]:
-            if path.endswith("/transactions"):
-                return [
-                    {
-                        "_id": f"transaction-{index}",
-                        "amount": "-100",
-                        "category": "shopping",
-                        "madeAt": "2026-09-13T12:00:00Z",
-                        "note": f"Transaction {index}",
-                    }
-                    for index in range(529)
-                ]
             if path.endswith("/transactionLabels"):
                 self.relation_calls += 1
                 return [{"label": "family"}]

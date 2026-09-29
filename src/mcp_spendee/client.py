@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import datetime as dt
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from requests import PreparedRequest, Response
 from spendee import Spendee, SpendeeFirestoreError
 from spendee.exceptions import SpendeeError
+from spendee.firestore import _decode_document
 
 from mcp_spendee.config import Settings
+from mcp_spendee.diagnostics import check_cancelled, event, resource_tag, span
 
 TransactionType = Literal["expense", "income"]
 ResourceId = int | str
@@ -46,8 +52,140 @@ class _ConfiguredSpendee(Spendee):
         # Firestore client calls user_login when it needs a fresh Firebase token.
         self._access_token = None
         self._device_uuid = None
-        refresh_token = self._get_refresh_token(self._email, self._password)
-        self._access_token = self._get_access_token(refresh_token)
+        with span("authentication"):
+            refresh_token = self._get_refresh_token(self._email, self._password)
+            self._access_token = self._get_access_token(refresh_token)
+
+    def send(self, request: PreparedRequest, **kwargs: Any) -> Response:
+        check_cancelled()
+        # Session.request is called directly by the upstream Firestore client;
+        # instrument send so both Firebase auth and Firestore traffic are covered.
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = (10, 30)
+        parsed = urlsplit(request.url or "")
+        endpoint = parsed.path.rsplit("/", 1)[-1]
+        if endpoint not in {
+            "verifyPassword",
+            "token",
+            "wallets",
+            "categories",
+            "labels",
+            "transactions",
+            "transactionLabels",
+        }:
+            endpoint = "runQuery" if endpoint.endswith(":runQuery") else "document"
+        with span(
+            "http",
+            host=parsed.hostname,
+            endpoint=endpoint,
+            method=request.method,
+            timeout=kwargs["timeout"],
+        ):
+            response = super().send(request, **kwargs)
+            event("http_response", status=response.status_code)
+            return response
+
+    def _firestore_request(
+        self, method: str, url: str, retry_auth: bool = True, **kwargs: Any
+    ) -> Response:
+        response = super()._firestore_request(method, url, retry_auth=retry_auth, **kwargs)
+        if method == "GET":
+            payload = response.json()
+            if "documents" in payload:
+                event(
+                    "collection_page",
+                    documents=len(payload["documents"]),
+                    has_next=bool(payload.get("nextPageToken")),
+                )
+        return response
+
+    def _query_transactions(
+        self,
+        path: str,
+        *,
+        offset: int,
+        limit: int | None,
+        date_from: str | None,
+        date_to: str | None,
+    ) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {
+            "from": [{"collectionId": "transactions"}],
+            "orderBy": [
+                {"field": {"fieldPath": "madeAt"}, "direction": "DESCENDING"},
+                {"field": {"fieldPath": "__name__"}, "direction": "DESCENDING"},
+            ],
+        }
+        filters = [
+            {
+                "fieldFilter": {
+                    "field": {"fieldPath": "madeAt"},
+                    "op": operator,
+                    "value": {"timestampValue": value},
+                }
+            }
+            for operator, value in (("GREATER_THAN_OR_EQUAL", date_from), ("LESS_THAN", date_to))
+            if value is not None
+        ]
+        if filters:
+            query["where"] = {"compositeFilter": {"op": "AND", "filters": filters}}
+        if offset:
+            query["offset"] = offset
+        event(
+            "query_start",
+            wallet=resource_tag(path),
+            offset=offset,
+            limit=limit,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        result: list[dict[str, Any]] = []
+        read_time = None
+        page = 0
+        while limit is None or len(result) < limit:
+            check_cancelled()
+            page_size = 300 if limit is None else min(300, limit - len(result))
+            query["limit"] = page_size
+            body: dict[str, Any] = {"structuredQuery": dict(query)}
+            if read_time is not None:
+                body["readTime"] = read_time
+            response = self._firestore_request(
+                "POST", f"{self._firestore_documents_url}/{path}:runQuery", json=body
+            )
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise SpendeeClientError("Unexpected Firestore query response")
+            documents = []
+            page_read_time = None
+            for row in payload:
+                if not isinstance(row, dict) or "error" in row:
+                    raise SpendeeClientError("Invalid Firestore query row")
+                if "document" in row:
+                    documents.append(row["document"])
+                page_read_time = row.get("readTime") or page_read_time
+            if read_time is None:
+                read_time = page_read_time
+            result.extend(_decode_document(document) for document in documents)
+            page += 1
+            event(
+                "query_page",
+                wallet=resource_tag(path),
+                page=page,
+                documents=len(documents),
+                total_documents=len(result),
+                page_size=page_size,
+            )
+            if len(documents) < page_size or (limit is not None and len(result) >= limit):
+                break
+            last = documents[-1]
+            # Pin later pages to the first read snapshot; the name breaks ties in madeAt.
+            if read_time is None:
+                raise SpendeeClientError("Firestore did not provide a pagination snapshot")
+            query.pop("offset", None)
+            query["startAt"] = {
+                "before": False,
+                "values": [last["fields"]["madeAt"], {"referenceValue": last["name"]}],
+            }
+        return result
 
     def list_firestore_transactions(
         self,
@@ -56,6 +194,8 @@ class _ConfiguredSpendee(Spendee):
         offset: int = 0,
         limit: int | None = 100,
         include_labels: bool = True,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return current transactions from Firestore for modern UUID wallets."""
 
@@ -78,10 +218,10 @@ class _ConfiguredSpendee(Spendee):
             public_wallet_id = _public_id(wallet)
             if not isinstance(firestore_wallet_id, str) or public_wallet_id is None:
                 continue
-            path = f"users/{self.firestore_user_id}/wallets/{firestore_wallet_id}/transactions"
-            stored_transactions = self._firestore_collection(path)
-            stop = None if limit is None else offset + limit
-            selected_transactions = stored_transactions[offset:stop]
+            path = f"users/{self.firestore_user_id}/wallets/{firestore_wallet_id}"
+            selected_transactions = self._query_transactions(
+                path, offset=offset, limit=limit, date_from=date_from, date_to=date_to
+            )
             label_names = (
                 {label["id"]: label["name"] for label in self.list_labels()}
                 if include_labels
@@ -135,6 +275,29 @@ class _ConfiguredSpendee(Spendee):
         return transactions
 
 
+def _utc_text(value: dt.datetime) -> str:
+    return value.astimezone(dt.UTC).isoformat().replace("+00:00", "Z")
+
+
+def _date_bound(value: str | None, *, end: bool) -> str | None:
+    if value is None:
+        return None
+    try:
+        if len(value) == 10:
+            parsed = dt.datetime.combine(dt.date.fromisoformat(value), dt.time(), dt.UTC)
+            if end:
+                parsed += dt.timedelta(days=1)
+        else:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("missing timezone")
+        return _utc_text(parsed)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(
+            "date bounds must be YYYY-MM-DD or ISO 8601 timestamps with a UTC offset"
+        ) from exc
+
+
 def _pick(item: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: item.get(field) for field in fields}
 
@@ -179,8 +342,21 @@ class SpendeeGateway:
                 )
         return self._api
 
-    def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+    @contextmanager
+    def _locked(self, operation: str) -> Iterator[None]:
+        started = time.monotonic()
+        event("lock_wait", operation=operation)
         with self._lock:
+            event(
+                "lock_acquired",
+                operation=operation,
+                wait_ms=round((time.monotonic() - started) * 1000),
+            )
+            check_cancelled()
+            yield
+
+    def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        with span("gateway", operation=method), self._locked(method):
             api = self._get_api()
             for attempt in range(2):
                 try:
@@ -191,6 +367,12 @@ class SpendeeGateway:
                         response = getattr(exc.__cause__, "response", None)
                     status_code = getattr(response, "status_code", None)
                     if attempt == 0 and status_code in {401, 403}:
+                        event(
+                            "authentication_retry",
+                            operation=method,
+                            status=status_code,
+                            attempt=attempt + 1,
+                        )
                         try:
                             # The archived client adds its current bearer token to the
                             # Firebase password-login request. If that token has expired,
@@ -265,13 +447,34 @@ class SpendeeGateway:
         *,
         wallet_id: ResourceId | None = None,
         offset: int = 0,
-        limit: int = 100,
+        limit: int | None = 100,
         include_labels: bool = False,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> list[dict[str, Any]]:
         if offset < 0:
             raise ValueError("offset must be non-negative")
-        if not 1 <= limit <= 1000:
-            raise ValueError("limit must be between 1 and 1000")
+        if limit is not None and not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000 or null for a complete date range")
+        lower = _date_bound(date_from, end=False)
+        upper = _date_bound(date_to, end=True)
+        if (
+            lower is not None
+            and upper is not None
+            and dt.datetime.fromisoformat(lower) >= dt.datetime.fromisoformat(upper)
+        ):
+            raise ValueError("date_from must be earlier than date_to's exclusive boundary")
+        if limit is None and (lower is None or upper is None):
+            raise ValueError("limit=null requires both date_from and date_to")
+        event(
+            "transaction_query",
+            wallet=resource_tag(wallet_id) if wallet_id is not None else "all",
+            offset=offset,
+            limit=limit,
+            include_labels=include_labels,
+            date_from=lower,
+            date_to=upper,
+        )
 
         transactions = self._call(
             "list_firestore_transactions",
@@ -279,6 +482,8 @@ class SpendeeGateway:
             offset=offset,
             limit=limit,
             include_labels=include_labels,
+            date_from=lower,
+            date_to=upper,
         )
 
         fields = (
@@ -412,7 +617,7 @@ class SpendeeGateway:
         if not normalized_request_id:
             raise ValueError("request_id is required when confirm=true")
 
-        with self._lock:
+        with self._locked("create_transaction"):
             if normalized_request_id in self._write_results:
                 stored = self._write_results[normalized_request_id]
                 if normalized_labels and not stored.get("labels_applied", False):
@@ -520,12 +725,20 @@ class SpendeeGateway:
             wallet_aliases=wallet_aliases,
             category_aliases=category_aliases,
         )
+        instant = (
+            self._parse_datetime(preview["occurred_at"])
+            .replace(tzinfo=ZoneInfo(self._settings.timezone))
+            .astimezone(dt.UTC)
+        )
+        day = instant.replace(hour=0, minute=0, second=0, microsecond=0)
         transactions = self._call(
             "list_firestore_transactions",
             preview["wallet_id"],
             offset=0,
             limit=None,
             include_labels=False,
+            date_from=_utc_text(day - dt.timedelta(days=1)),
+            date_to=_utc_text(day + dt.timedelta(days=2)),
         )
         for transaction in transactions:
             try:

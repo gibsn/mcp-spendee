@@ -82,3 +82,38 @@ async def test_slow_transaction_read_does_not_block_tools_list(
     assert started.is_set()
     assert {tool.name for tool in tools.tools}
     assert elapsed < 0.2
+
+
+@pytest.mark.anyio
+async def test_date_range_and_null_limit_reach_gateway(
+    client_session: ClientSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    class Gateway:
+        def list_transactions(self, **kwargs: object) -> list[dict[str, object]]:
+            calls.append(kwargs)
+            return []
+
+    monkeypatch.setattr(server, "_gateway", Gateway())
+    result = await client_session.call_tool(
+        "list_transactions",
+        {
+            "wallet_id": "wallet",
+            "date_from": "2026-09-28",
+            "date_to": "2026-09-30",
+            "limit": None,
+        },
+    )
+    assert not result.isError
+    assert calls == [
+        {
+            "wallet_id": "wallet",
+            "date_from": "2026-09-28",
+            "date_to": "2026-09-30",
+            "limit": None,
+            "offset": 0,
+            "include_labels": False,
+        }
+    ]
